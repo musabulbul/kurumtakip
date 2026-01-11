@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "694457330631",
+    "project_id": "kurumtakipapp",
+    "storage_bucket": "kurumtakipapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:694457330631:android:d5e2431fb853508f4a07e2",
+        "android_client_info": {
+          "package_name": "com.mebs.kurumtakip"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDdGY3kGvVfABlrDK7nwS6NdWICH44TPww"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

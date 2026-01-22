@@ -24,6 +24,7 @@ import 'danisan_profil.dart';
 import '../utils/phone_utils.dart';
 import '../utils/student_utils.dart';
 import '../utils/permission_utils.dart';
+import '../utils/text_utils.dart';
 import 'settings/admin_settings_page.dart';
 
 class SearchPage extends StatefulWidget {
@@ -62,12 +63,12 @@ class _SearchPageState extends State<SearchPage> {
   final EdgeInsets _pagePadding = const EdgeInsets.symmetric(horizontal: 16);
 
   void filtre(String kelime) {
-    final query = kelime.trim().toUpperCase();
+    final query = normalizeTr(kelime);
     _aramaSonucu.value = danisanlar
         .where((e) {
-          final name = (e['adi'] ?? '').toString().toUpperCase();
-          final surname = (e['soyadi'] ?? '').toString().toUpperCase();
-          final phone = _resolvePhone(e).toUpperCase();
+          final name = normalizeTr((e['adi'] ?? '').toString());
+          final surname = normalizeTr((e['soyadi'] ?? '').toString());
+          final phone = normalizeTr(_resolvePhone(e));
           return name.contains(query) || surname.contains(query) || phone.contains(query);
         })
         .toList()
@@ -221,6 +222,9 @@ class _SearchPageState extends State<SearchPage> {
             ),
             Expanded(
               child: Obx(() {
+                if (!_canSearchStudents) {
+                  return _buildReservationSection();
+                }
                 final query = _searchQuery.value.trim();
                 if (query.isEmpty) {
                   return _buildReservationSection();
@@ -309,6 +313,13 @@ class _SearchPageState extends State<SearchPage> {
                   },
                 ),
               ListTile(
+                title: const Text('Şifre Değiştir'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _showChangePasswordDialog();
+                },
+              ),
+              ListTile(
                 title: const Text("Çıkış Yap"),
                 onTap: () async {
                   Navigator.pop(context);
@@ -380,6 +391,16 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<bool> _confirmExitOnBack() async {
+    final query = _searchQuery.value.trim();
+    if (query.isNotEmpty) {
+      _aramaController.clear();
+      _aramaSonucu.clear();
+      _searchQuery.value = '';
+      if (mounted) {
+        FocusScope.of(context).unfocus();
+      }
+      return false;
+    }
     return await _showExitConfirmationDialog();
   }
 
@@ -443,6 +464,16 @@ class _SearchPageState extends State<SearchPage> {
   bool get _isManager =>
       (user.data['rol'] ?? '').toString().toUpperCase() == 'YÖNETİCİ';
 
+  bool get _canSearchStudents => canSearchStudents(user.data);
+
+  bool get _canViewContactInfo => canViewContactInfo(user.data);
+
+  bool get _canViewAllReservations => canViewAllReservations(user.data);
+
+  String _currentUserId() {
+    return (user.data['email'] ?? user.data['uid'] ?? '').toString();
+  }
+
   String _currentInstitutionId() {
     return (kurum.data['kurumkodu'] ?? '').toString();
   }
@@ -495,8 +526,24 @@ class _SearchPageState extends State<SearchPage> {
     if (kurumkodu.isEmpty) {
       return const Center(child: Text('Rezervasyon tablosu yüklenemedi.'));
     }
+    final sessionHours =
+        _asMap(_asMap(kurum.data['settings'])['sessionHours']);
+    final sessionConfig = _resolveSessionHours(sessionHours, _selectedDay);
     final dayStart = DateUtils.dateOnly(_selectedDay);
-    final dayEnd = dayStart.add(const Duration(days: 1));
+    final dayEnd = dayStart.add(Duration(minutes: sessionConfig.endMinutes));
+    Query<Map<String, dynamic>> reservationsQuery = FirebaseFirestore.instance
+        .collection("kurumlar")
+        .doc(kurumkodu)
+        .collection('rezervasyonlar')
+        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(dayStart))
+        .where('date', isLessThan: Timestamp.fromDate(dayEnd));
+    if (!_canViewAllReservations) {
+      final currentUserId = _currentUserId();
+      reservationsQuery = reservationsQuery.where(
+        'assignedUserId',
+        isEqualTo: currentUserId.isNotEmpty ? currentUserId : '__none__',
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -513,13 +560,7 @@ class _SearchPageState extends State<SearchPage> {
           child: Padding(
             padding: _pagePadding.copyWith(bottom: 16),
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection("kurumlar")
-                  .doc(kurumkodu)
-                  .collection('rezervasyonlar')
-                  .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(dayStart))
-                  .where('date', isLessThan: Timestamp.fromDate(dayEnd))
-                  .snapshots(),
+              stream: reservationsQuery.snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return const Center(child: Text('Rezervasyonlar yüklenemedi.'));
@@ -530,12 +571,29 @@ class _SearchPageState extends State<SearchPage> {
                 final reservations = snapshot.data!.docs
                     .map((doc) => Reservation.fromSnapshot(doc))
                     .toList();
-                return ReservationGrid(
-                  selectedDay: _selectedDay,
-                  locations: _resolvedLocations,
-                  reservations: reservations,
-                  onDayChanged: _updateSelectedDay,
-                  onReservationTap: _handleReservationTap,
+                final reservationIds = reservations.map((entry) => entry.id).toSet();
+                final completedStream = FirebaseFirestore.instance
+                    .collectionGroup('islemler')
+                    .snapshots();
+                return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: completedStream,
+                  builder: (context, completedSnapshot) {
+                    final completedByReservation = completedSnapshot.hasData
+                        ? _extractCompletedOperationKeys(
+                            completedSnapshot.data!.docs,
+                            reservationIds,
+                          )
+                        : <String, Set<String>>{};
+                    return ReservationGrid(
+                      selectedDay: _selectedDay,
+                      locations: _resolvedLocations,
+                      reservations: reservations,
+                      completedByReservation: completedByReservation,
+                      sessionHours: sessionHours,
+                      onDayChanged: _updateSelectedDay,
+                      onReservationTap: _handleReservationTap,
+                    );
+                  },
                 );
               },
             ),
@@ -546,6 +604,26 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Widget _buildSearchField() {
+    if (!_canSearchStudents) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: const Text(
+          'Danışan arama yetkiniz bulunmuyor.',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+      );
+    }
     final searchField = Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -623,7 +701,7 @@ class _SearchPageState extends State<SearchPage> {
         final danisan = _aramaSonucu[index];
         final adi = (danisan["adi"] ?? '').toString();
         final soyadi = (danisan["soyadi"] ?? '').toString();
-        final phone = _resolvePhone(danisan);
+        final phone = _canViewContactInfo ? _resolvePhone(danisan) : '';
         final initials = [adi, soyadi]
             .where((part) => part.isNotEmpty)
             .map((part) => part.characters.first.toUpperCase())
@@ -672,6 +750,205 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  Future<void> _showChangePasswordDialog() async {
+    final authUser = FirebaseAuth.instance.currentUser;
+    if (authUser == null || authUser.email == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Kullanıcı bilgisi bulunamadı.')),
+        );
+      }
+      return;
+    }
+
+    final currentPasswordController = TextEditingController();
+    final newPasswordController = TextEditingController();
+    final confirmPasswordController = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        bool isSaving = false;
+        bool obscureCurrent = true;
+        bool obscureNew = true;
+        bool obscureConfirm = true;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Şifre Değiştir'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: currentPasswordController,
+                      obscureText: obscureCurrent,
+                      decoration: InputDecoration(
+                        labelText: 'Mevcut şifre',
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscureCurrent ? Icons.visibility : Icons.visibility_off,
+                          ),
+                          onPressed: () {
+                            setDialogState(() {
+                              obscureCurrent = !obscureCurrent;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newPasswordController,
+                      obscureText: obscureNew,
+                      decoration: InputDecoration(
+                        labelText: 'Yeni şifre',
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscureNew ? Icons.visibility : Icons.visibility_off,
+                          ),
+                          onPressed: () {
+                            setDialogState(() {
+                              obscureNew = !obscureNew;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: confirmPasswordController,
+                      obscureText: obscureConfirm,
+                      decoration: InputDecoration(
+                        labelText: 'Yeni şifre (tekrar)',
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscureConfirm ? Icons.visibility : Icons.visibility_off,
+                          ),
+                          onPressed: () {
+                            setDialogState(() {
+                              obscureConfirm = !obscureConfirm;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final currentPassword =
+                              currentPasswordController.text.trim();
+                          final newPassword =
+                              newPasswordController.text.trim();
+                          final confirmPassword =
+                              confirmPasswordController.text.trim();
+
+                          if (currentPassword.isEmpty ||
+                              newPassword.isEmpty ||
+                              confirmPassword.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Lütfen tüm alanları doldurun.'),
+                              ),
+                            );
+                            return;
+                          }
+                          if (newPassword.length < 6) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Şifre en az 6 karakter olmalıdır.'),
+                              ),
+                            );
+                            return;
+                          }
+                          if (newPassword != confirmPassword) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Yeni şifreler eşleşmiyor.'),
+                              ),
+                            );
+                            return;
+                          }
+
+                          setDialogState(() {
+                            isSaving = true;
+                          });
+
+                          try {
+                            final credential = EmailAuthProvider.credential(
+                              email: authUser.email!,
+                              password: currentPassword,
+                            );
+                            await authUser.reauthenticateWithCredential(credential);
+                            await authUser.updatePassword(newPassword);
+                            if (!mounted || !dialogContext.mounted) {
+                              return;
+                            }
+                            Navigator.of(dialogContext).pop();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Şifre güncellendi.')),
+                            );
+                          } on FirebaseAuthException catch (e) {
+                            String message = 'Şifre güncellenemedi: ${e.message}';
+                            if (e.code == 'wrong-password') {
+                              message = 'Mevcut şifre yanlış.';
+                            } else if (e.code == 'weak-password') {
+                              message = 'Şifre en az 6 karakter olmalıdır.';
+                            } else if (e.code == 'requires-recent-login') {
+                              message = 'Lütfen yeniden giriş yapın.';
+                            }
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(message)),
+                              );
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Şifre güncellenemedi: $e')),
+                              );
+                            }
+                          } finally {
+                            if (dialogContext.mounted) {
+                              setDialogState(() {
+                                isSaving = false;
+                              });
+                            }
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Güncelle'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    currentPasswordController.dispose();
+    newPasswordController.dispose();
+    confirmPasswordController.dispose();
+  }
+
   Widget _buildSearchEmptyState() {
     return ListView(
       padding: _pagePadding.copyWith(top: 24, bottom: 32),
@@ -701,6 +978,7 @@ class Reservation {
     required this.customerShortName,
     required this.assignedUserId,
     required this.assignedUserColor,
+    required this.operations,
   });
 
   final String id;
@@ -712,6 +990,7 @@ class Reservation {
   final String customerShortName;
   final String? assignedUserId;
   final Color? assignedUserColor;
+  final List<_ReservationOperation> operations;
 
   factory Reservation.fromSnapshot(
     QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
@@ -749,6 +1028,7 @@ class Reservation {
         (assignedUserId.isNotEmpty
             ? _resolveUserColor(assignedUserId)
             : (assignedUserName.isNotEmpty ? _resolveUserColor(assignedUserName) : null));
+    final operations = _extractReservationOperations(data);
     return Reservation(
       id: snapshot.id,
       customerId: (data['customerId'] ?? '').toString().trim(),
@@ -759,8 +1039,49 @@ class Reservation {
       customerShortName: resolvedShortName,
       assignedUserId: assignedUserId.isNotEmpty ? assignedUserId : null,
       assignedUserColor: assignedUserColor,
+      operations: operations,
     );
   }
+}
+
+class _ReservationOperation {
+  const _ReservationOperation({
+    required this.operationId,
+    required this.operationName,
+  });
+
+  final String operationId;
+  final String operationName;
+}
+
+List<_ReservationOperation> _extractReservationOperations(
+  Map<String, dynamic> data,
+) {
+  final operations = <_ReservationOperation>[];
+  final rawOperations = data['operations'];
+  if (rawOperations is List) {
+    for (final item in rawOperations) {
+      if (item is Map) {
+        final opId = (item['operationId'] ?? '').toString().trim();
+        final opName = (item['operationName'] ?? '').toString().trim();
+        if (opId.isNotEmpty || opName.isNotEmpty) {
+          operations.add(
+            _ReservationOperation(operationId: opId, operationName: opName),
+          );
+        }
+      }
+    }
+  }
+  if (operations.isEmpty) {
+    final opId = (data['operationId'] ?? '').toString().trim();
+    final opName = (data['operationName'] ?? '').toString().trim();
+    if (opId.isNotEmpty || opName.isNotEmpty) {
+      operations.add(
+        _ReservationOperation(operationId: opId, operationName: opName),
+      );
+    }
+  }
+  return operations;
 }
 
 class _MekanLocation {
@@ -783,24 +1104,42 @@ class TimeSlot {
   final int startMinutes;
 }
 
+class _SessionHoursConfig {
+  const _SessionHoursConfig({
+    required this.startMinutes,
+    required this.endMinutes,
+    required this.intervalMinutes,
+  });
+
+  final int startMinutes;
+  final int endMinutes;
+  final int intervalMinutes;
+}
+
 const int _slotDurationMinutes = 30;
 
 List<TimeSlot> buildTimeSlots({
-  int startHour = 9,
-  int endHour = 20,
+  int startMinutes = 9 * 60,
+  int endMinutes = 20 * 60,
   int intervalMinutes = _slotDurationMinutes,
 }) {
   final slots = <TimeSlot>[];
-  var minutes = startHour * 60;
-  final endMinutes = endHour * 60;
-  while (minutes < endMinutes) {
+  final safeInterval = intervalMinutes > 0 ? intervalMinutes : _slotDurationMinutes;
+  var minutes = startMinutes;
+  final safeEnd =
+      endMinutes > startMinutes ? endMinutes : startMinutes + safeInterval;
+  while (minutes < safeEnd) {
+    final normalizedMinutes = minutes % (24 * 60);
     slots.add(
       TimeSlot(
-        time: TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60),
+        time: TimeOfDay(
+          hour: normalizedMinutes ~/ 60,
+          minute: normalizedMinutes % 60,
+        ),
         startMinutes: minutes,
       ),
     );
-    minutes += intervalMinutes;
+    minutes += safeInterval;
   }
   return slots;
 }
@@ -811,19 +1150,80 @@ String formatTimeLabel(TimeOfDay time) {
   return '$hour:$minute';
 }
 
-Map<String, Reservation> buildReservationLookup(List<Reservation> reservations) {
+Map<String, Reservation> buildReservationLookup(
+  List<Reservation> reservations, {
+  required int intervalMinutes,
+}) {
   final lookup = <String, Reservation>{};
+  final step = intervalMinutes > 0 ? intervalMinutes : _slotDurationMinutes;
   for (final reservation in reservations) {
     final endMinutes = reservation.endMinutes > reservation.startMinutes
         ? reservation.endMinutes
-        : reservation.startMinutes + _slotDurationMinutes;
+        : reservation.startMinutes + step;
     for (var slot = reservation.startMinutes;
         slot < endMinutes;
-        slot += _slotDurationMinutes) {
+        slot += step) {
       lookup[_reservationKey(reservation.location, slot)] = reservation;
     }
   }
   return lookup;
+}
+
+String _weekdayKey(DateTime day) {
+  switch (day.weekday) {
+    case DateTime.monday:
+      return 'mon';
+    case DateTime.tuesday:
+      return 'tue';
+    case DateTime.wednesday:
+      return 'wed';
+    case DateTime.thursday:
+      return 'thu';
+    case DateTime.friday:
+      return 'fri';
+    case DateTime.saturday:
+      return 'sat';
+    case DateTime.sunday:
+      return 'sun';
+  }
+  return 'mon';
+}
+
+Map<String, dynamic> _asMap(dynamic value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  return {};
+}
+
+_SessionHoursConfig _resolveSessionHours(
+  Map<String, dynamic> sessionHours,
+  DateTime day,
+) {
+  final dayConfig = _asMap(sessionHours[_weekdayKey(day)]);
+  final startMinutes = _readInt(dayConfig['startMinutes']) ?? 9 * 60;
+  final rawEndMinutes = _readInt(dayConfig['endMinutes']) ?? 20 * 60;
+  final intervalMinutes = _readInt(dayConfig['intervalMinutes']) ?? _slotDurationMinutes;
+  final endNextDay =
+      dayConfig['endNextDay'] == true || rawEndMinutes >= 24 * 60;
+  final endMinutes =
+      endNextDay ? rawEndMinutes + 24 * 60 : rawEndMinutes;
+  final safeInterval = intervalMinutes > 0 ? intervalMinutes : _slotDurationMinutes;
+  if (endMinutes <= startMinutes) {
+    return _SessionHoursConfig(
+      startMinutes: 9 * 60,
+      endMinutes: 20 * 60,
+      intervalMinutes: _slotDurationMinutes,
+    );
+  }
+  return _SessionHoursConfig(
+    startMinutes: startMinutes,
+    endMinutes: endMinutes,
+    intervalMinutes: safeInterval,
+  );
 }
 
 String _reservationKey(String location, int slotStartMinutes) {
@@ -920,6 +1320,8 @@ class ReservationGrid extends StatefulWidget {
     required this.selectedDay,
     required this.locations,
     required this.reservations,
+    required this.completedByReservation,
+    required this.sessionHours,
     required this.onDayChanged,
     required this.onReservationTap,
   });
@@ -927,6 +1329,8 @@ class ReservationGrid extends StatefulWidget {
   final DateTime selectedDay;
   final List<String> locations;
   final List<Reservation> reservations;
+  final Map<String, Set<String>> completedByReservation;
+  final Map<String, dynamic> sessionHours;
   final ValueChanged<DateTime> onDayChanged;
   final ValueChanged<Reservation> onReservationTap;
 
@@ -968,9 +1372,18 @@ class _ReservationGridState extends State<ReservationGrid> {
 
   @override
   Widget build(BuildContext context) {
-    final slots = buildTimeSlots();
+    final sessionConfig =
+        _resolveSessionHours(widget.sessionHours, widget.selectedDay);
+    final slots = buildTimeSlots(
+      startMinutes: sessionConfig.startMinutes,
+      endMinutes: sessionConfig.endMinutes,
+      intervalMinutes: sessionConfig.intervalMinutes,
+    );
     final theme = Theme.of(context);
-    final reservationLookup = buildReservationLookup(widget.reservations);
+    final reservationLookup = buildReservationLookup(
+      widget.reservations,
+      intervalMinutes: sessionConfig.intervalMinutes,
+    );
     final borderColor = theme.colorScheme.outlineVariant.withOpacity(0.6);
 
     return Column(
@@ -1008,13 +1421,14 @@ class _ReservationGridState extends State<ReservationGrid> {
                                 child: SizedBox(
                                   width: widget.locations.length *
                                       ReservationGrid._locationColumnWidth,
-                                  child: Column(
-                                    children: slots
-                                        .map(
-                                          (slot) => _buildLocationRow(
+                                      child: Column(
+                                        children: slots
+                                            .map(
+                                              (slot) => _buildLocationRow(
                                             context,
                                             slot,
                                             reservationLookup,
+                                            sessionConfig.intervalMinutes,
                                             borderColor,
                                           ),
                                         )
@@ -1215,6 +1629,7 @@ class _ReservationGridState extends State<ReservationGrid> {
     BuildContext context,
     TimeSlot slot,
     Map<String, Reservation> reservationLookup,
+    int intervalMinutes,
     Color borderColor,
   ) {
     return SizedBox(
@@ -1223,10 +1638,12 @@ class _ReservationGridState extends State<ReservationGrid> {
         children: widget.locations.map((location) {
           final reservation =
               reservationLookup[_reservationKey(location, slot.startMinutes)];
-          final prevSlotStart = slot.startMinutes - _slotDurationMinutes;
+          final step =
+              intervalMinutes > 0 ? intervalMinutes : _slotDurationMinutes;
+          final prevSlotStart = slot.startMinutes - step;
           final prevReservation =
               reservationLookup[_reservationKey(location, prevSlotStart)];
-          final nextSlotStart = slot.startMinutes + _slotDurationMinutes;
+          final nextSlotStart = slot.startMinutes + step;
           final nextReservation =
               reservationLookup[_reservationKey(location, nextSlotStart)];
           final sameAsPrev = reservation != null &&
@@ -1244,6 +1661,7 @@ class _ReservationGridState extends State<ReservationGrid> {
             isEnd: isEnd,
             showLabel: reservation != null,
             borderColor: borderColor,
+            completedByReservation: widget.completedByReservation,
           );
         }).toList(),
       ),
@@ -1257,6 +1675,7 @@ class _ReservationGridState extends State<ReservationGrid> {
     required bool isEnd,
     required bool showLabel,
     required Color borderColor,
+    required Map<String, Set<String>> completedByReservation,
   }) {
     final theme = Theme.of(context);
     final baseCellColor = Color.lerp(
@@ -1267,8 +1686,11 @@ class _ReservationGridState extends State<ReservationGrid> {
         theme.colorScheme.surface;
     final reservationColor =
         reservation?.assignedUserColor ?? theme.colorScheme.surfaceVariant;
-    final cellColor =
-        reservation == null ? baseCellColor : reservationColor.withOpacity(0.2);
+    final isCompleted = reservation != null &&
+        _isReservationCompleted(reservation, completedByReservation);
+    final effectiveCellColor = reservation == null
+        ? baseCellColor
+        : reservationColor.withOpacity(isCompleted ? 0.12 : 0.2);
     final labelColor = reservation?.assignedUserColor != null
         ? _resolveForegroundColor(reservationColor, theme.colorScheme.onSurface)
         : theme.colorScheme.onSurface;
@@ -1304,7 +1726,7 @@ class _ReservationGridState extends State<ReservationGrid> {
       width: ReservationGrid._locationColumnWidth,
       height: ReservationGrid._rowHeight,
       child: Material(
-        color: cellColor,
+        color: effectiveCellColor,
         child: InkWell(
           onTap:
               reservation == null ? null : () => widget.onReservationTap(reservation),
@@ -1321,7 +1743,9 @@ class _ReservationGridState extends State<ReservationGrid> {
                 : SizedBox.expand(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: reservationColor,
+                        color: isCompleted
+                            ? reservationColor.withOpacity(0.4)
+                            : reservationColor,
                         borderRadius: cardRadius,
                         boxShadow: showShadow
                             ? [
@@ -1339,8 +1763,14 @@ class _ReservationGridState extends State<ReservationGrid> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: theme.textTheme.labelSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: labelColor,
+                            fontWeight:
+                                isCompleted ? FontWeight.w500 : FontWeight.w700,
+                            color: isCompleted
+                                ? labelColor.withOpacity(0.6)
+                                : labelColor,
+                            decoration: isCompleted
+                                ? TextDecoration.lineThrough
+                                : TextDecoration.none,
                           ),
                         ),
                       ),
@@ -1351,4 +1781,62 @@ class _ReservationGridState extends State<ReservationGrid> {
       ),
     );
   }
+}
+
+Map<String, Set<String>> _extractCompletedOperationKeys(
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  Set<String> reservationIds,
+) {
+  final result = <String, Set<String>>{};
+  for (final doc in docs) {
+    final data = doc.data();
+    final reservationId = (data['reservationId'] ?? '').toString().trim();
+    if (reservationId.isEmpty || !reservationIds.contains(reservationId)) {
+      continue;
+    }
+    final operationId = (data['operationId'] ?? '').toString().trim();
+    final operationName = (data['operationName'] ?? '').toString().trim();
+    final keys = result.putIfAbsent(reservationId, () => <String>{});
+    if (operationId.isNotEmpty) {
+      keys.add('id:$operationId');
+    }
+    if (operationName.isNotEmpty) {
+      keys.add('name:$operationName');
+    }
+  }
+  return result;
+}
+
+bool _isOperationCompleted(
+  _ReservationOperation operation,
+  Set<String> completedKeys,
+) {
+  if (operation.operationId.isNotEmpty &&
+      completedKeys.contains('id:${operation.operationId}')) {
+    return true;
+  }
+  if (operation.operationName.isNotEmpty &&
+      completedKeys.contains('name:${operation.operationName}')) {
+    return true;
+  }
+  return false;
+}
+
+bool _isReservationCompleted(
+  Reservation reservation,
+  Map<String, Set<String>> completedByReservation,
+) {
+  if (reservation.operations.isEmpty) {
+    return false;
+  }
+  final completedKeys = completedByReservation[reservation.id];
+  if (completedKeys == null || completedKeys.isEmpty) {
+    return false;
+  }
+  for (final operation in reservation.operations) {
+    if (!_isOperationCompleted(operation, completedKeys)) {
+      return false;
+    }
+  }
+  return true;
 }

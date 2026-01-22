@@ -1,10 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-
-import 'package:kurum_takip/controllers/institution_controller.dart';
-import 'package:kurum_takip/utils/institution_metadata_utils.dart';
+import 'package:kurum_takip/utils/permission_utils.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 class UserProfilePage extends StatefulWidget {
@@ -17,9 +14,9 @@ class UserProfilePage extends StatefulWidget {
 }
 
 class _UserProfilePageState extends State<UserProfilePage> {
-  final InstitutionController _institution = Get.find<InstitutionController>();
   Map<String, dynamic>? _userData;
   bool _isLoading = true;
+  bool _isSavingPermissions = false;
 
   static const Map<String, String> _fieldLabels = {
     'adi': 'Adı',
@@ -27,6 +24,43 @@ class _UserProfilePageState extends State<UserProfilePage> {
     'kisaad': 'Kısa Ad',
     'rol': 'Rol',
   };
+
+  static const List<String> _permissionOrder = [
+    kPermissionViewPrice,
+    kPermissionUpdatePrice,
+    kPermissionCreateReservation,
+    kPermissionUpdateReservation,
+    kPermissionTakePayment,
+    kPermissionViewAllReservations,
+    kPermissionViewContactInfo,
+    kPermissionSearchStudents,
+    kPermissionUpdateStudent,
+    kPermissionMakeSale,
+  ];
+
+  static const Map<String, String> _permissionLabels = {
+    kPermissionViewPrice: 'Fiyat bilgilerini görme',
+    kPermissionUpdatePrice: 'Fiyat değiştirme',
+    kPermissionCreateReservation: 'Rezervasyon alma',
+    kPermissionUpdateReservation: 'Rezervasyon güncelleme',
+    kPermissionTakePayment: 'Ödeme alma',
+    kPermissionViewAllReservations: 'Tüm rezervasyonları görme',
+    kPermissionViewContactInfo: 'Müşteri iletişim bilgilerini görme',
+    kPermissionSearchStudents: 'Danışan arama',
+    kPermissionUpdateStudent: 'Danışan güncelleme',
+    kPermissionMakeSale: 'Satış yapma',
+  };
+
+  static const List<Color> _userColorPalette = [
+    Color(0xFFB3E5FC),
+    Color(0xFFC8E6C9),
+    Color(0xFFFFF9C4),
+    Color(0xFFFFCCBC),
+    Color(0xFFD1C4E9),
+    Color(0xFFFFE0B2),
+    Color(0xFFB2DFDB),
+    Color(0xFFFFDDE6),
+  ];
 
   @override
   void initState() {
@@ -150,209 +184,57 @@ class _UserProfilePageState extends State<UserProfilePage> {
     );
   }
 
-  List<String> _normalizeClassList(dynamic value) {
-    final result = <String>[];
-    if (value is Iterable) {
-      for (final item in value) {
-        final normalized = item?.toString().trim().toUpperCase();
-        if (normalized != null &&
-            normalized.isNotEmpty &&
-            !result.contains(normalized)) {
-          result.add(normalized);
-        }
-      }
-    } else if (value is String) {
-      final normalized = value.trim().toUpperCase();
-      if (normalized.isNotEmpty) {
-        result.add(normalized);
-      }
-    }
-    return result;
-  }
-
-  List<String> _availableClassSections() {
-    final available = <String>{
-      ...institutionClassSections(_institution)
-          .map((value) => value.trim().toUpperCase())
-          .where((value) => value.isNotEmpty),
-    };
-
-    final current = _normalizeClassList(_userData?['siniflar']);
-    for (final entry in current) {
-      if (entry != 'TÜMÜ') {
-        available.add(entry);
-      }
-    }
-
-    final list = available.toList()..sort((a, b) => a.compareTo(b));
-    return list;
-  }
-
-  String _classPermissionSummary() {
-    final classes = _normalizeClassList(_userData?['siniflar']);
-    if (classes.isEmpty || classes.contains('TÜMÜ')) {
-      return 'Tümü';
-    }
-    return classes.join(', ');
-  }
-
-  void _showClassSelectionDialog() {
-    final scaffoldMessenger = ScaffoldMessenger.of(context);
-    final availableClasses = _availableClassSections();
-
-    if (availableClasses.isEmpty) {
-      scaffoldMessenger.showSnackBar(
-        const SnackBar(content: Text('Kurum için tanımlı sınıf bulunamadı.')),
-      );
-      return;
-    }
-
-    final current = _normalizeClassList(_userData?['siniflar']);
-    bool allowAll = current.isEmpty || current.contains('TÜMÜ');
-    final selected = <String>{...current.where((item) => item != 'TÜMÜ')};
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        bool isSaving = false;
-
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
-            final listHeight = availableClasses.length > 6
-                ? 280.0
-                : (availableClasses.length * 48).clamp(160, 280).toDouble();
-
-            return AlertDialog(
-              title: const Text('Sınıf/Şube Yetkileri'),
-              content: SizedBox(
-                width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                        'Varsayılan olarak Tümü seçilir. Devre dışı bırakarak şube seçebilirsiniz.'),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Tümü'),
-                      value: allowAll,
-                      onChanged: (value) {
-                        setStateDialog(() {
-                          allowAll = value ?? false;
-                          if (allowAll) {
-                            selected.clear();
-                          }
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: listHeight,
-                      child: Scrollbar(
-                        thumbVisibility: availableClasses.length > 6,
-                        child: ListView.builder(
-                          itemCount: availableClasses.length,
-                          itemBuilder: (context, index) {
-                            final className = availableClasses[index];
-                            final isChecked = selected.contains(className);
-                            return CheckboxListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: Text(className),
-                              value: isChecked,
-                              onChanged: allowAll
-                                  ? null
-                                  : (value) {
-                                      setStateDialog(() {
-                                        if (value == true) {
-                                          selected.add(className);
-                                        } else {
-                                          selected.remove(className);
-                                        }
-                                      });
-                                    },
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: isSaving
-                      ? null
-                      : () => Navigator.of(dialogContext).pop(),
-                  child: const Text('İptal'),
-                ),
-                TextButton(
-                  onPressed: isSaving
-                      ? null
-                      : () async {
-                          if (!allowAll && selected.isEmpty) {
-                            scaffoldMessenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('En az bir sınıf/şube seçmelisiniz.'),
-                              ),
-                            );
-                            return;
-                          }
-
-                          setStateDialog(() {
-                            isSaving = true;
-                          });
-
-                          final payload = allowAll
-                              ? <String>['TÜMÜ']
-                              : (selected.toList()..sort());
-
-                          try {
-                            await FirebaseFirestore.instance
-                                .collection('kullanicilar')
-                                .doc(widget.userDocId)
-                                .update({'siniflar': payload});
-
-                            await fetchUserData();
-                            if (!mounted) return;
-
-                            Navigator.of(dialogContext).pop();
-                            scaffoldMessenger.showSnackBar(
-                              const SnackBar(
-                                content:
-                                    Text('Sınıf yetkileri güncellendi.'),
-                              ),
-                            );
-                          } catch (e) {
-                            setStateDialog(() {
-                              isSaving = false;
-                            });
-                            scaffoldMessenger.showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  'Sınıf yetkileri güncellenemedi: $e',
-                                ),
-                              ),
-                            );
-                          }
-                        },
-                  child: isSaving
-                      ? const SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Kaydet'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   bool _isEditableField(String field) {
     return _fieldLabels.containsKey(field);
+  }
+
+  Set<String> _readPermissions() {
+    final raw = _userData?['yetkiler'];
+    if (raw is Iterable) {
+      return raw
+          .map((item) => item?.toString().trim())
+          .where((item) => item != null && item!.isNotEmpty)
+          .cast<String>()
+          .toSet();
+    }
+    if (raw is String && raw.trim().isNotEmpty) {
+      return {raw.trim()};
+    }
+    return <String>{};
+  }
+
+  Future<void> _updateUserPermissions(Set<String> permissions) async {
+    if (_isSavingPermissions) {
+      return;
+    }
+    setState(() {
+      _isSavingPermissions = true;
+    });
+    try {
+      final payload = permissions.toList()..sort();
+      await FirebaseFirestore.instance
+          .collection('kullanicilar')
+          .doc(widget.userDocId)
+          .update({'yetkiler': payload});
+
+      await fetchUserData();
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Yetkiler güncellendi.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Yetkiler güncellenemedi: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingPermissions = false;
+        });
+      }
+    }
   }
 
   Widget _buildProfileItem(String title, String field, dynamic value) {
@@ -381,7 +263,58 @@ class _UserProfilePageState extends State<UserProfilePage> {
     );
   }
 
-  Widget _buildClassPermissionsCard() {
+  Color? _readColor(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is int) {
+      return Color(value);
+    }
+    if (value is String) {
+      final raw = value.trim().replaceAll('#', '');
+      if (raw.isEmpty) {
+        return null;
+      }
+      final normalized = raw.length == 6 ? 'FF$raw' : raw;
+      final parsed = int.tryParse(normalized, radix: 16);
+      if (parsed == null) {
+        return null;
+      }
+      return Color(parsed);
+    }
+    return null;
+  }
+
+  Future<void> _updateUserColor(Color? color) async {
+    try {
+      final payload =
+          color == null ? {'renk': FieldValue.delete()} : {'renk': color.value};
+      await FirebaseFirestore.instance
+          .collection('kullanicilar')
+          .doc(widget.userDocId)
+          .update(payload);
+
+      await fetchUserData();
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            color == null ? 'Kullanıcı rengi sıfırlandı.' : 'Kullanıcı rengi güncellendi.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Kullanıcı rengi güncellenemedi: $e')),
+      );
+    }
+  }
+
+  Widget _buildUserColorCard() {
+    final selectedColor = _readColor(_userData?['renk']);
+
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
       child: Padding(
@@ -390,24 +323,94 @@ class _UserProfilePageState extends State<UserProfilePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Sınıf/Şube Yetkisi',
+              'Kullanıcı Rengi',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
             const SizedBox(height: 8),
-            Text(_classPermissionSummary()),
-            const SizedBox(height: 8),
             const Text(
-              'Tümü seçiliyken şube seçimi pasiftir. İşaretini kaldırarak sınıf/şube seçebilirsiniz.',
+              'Rezervasyonlarda kullanılacak rengi seçin.',
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: _userColorPalette.map((color) {
+                final isSelected = selectedColor?.value == color.value;
+                return InkWell(
+                  onTap: () => _updateUserColor(color),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isSelected ? Colors.black : Colors.transparent,
+                        width: 2,
+                      ),
+                    ),
+                    child: isSelected
+                        ? const Icon(Icons.check, size: 18, color: Colors.black)
+                        : null,
+                  ),
+                );
+              }).toList(),
             ),
             const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
-              child: ElevatedButton.icon(
-                onPressed: _showClassSelectionDialog,
-                icon: const Icon(Icons.class_),
-                label: const Text('Düzenle'),
+              child: TextButton(
+                onPressed: selectedColor == null ? null : () => _updateUserColor(null),
+                child: const Text('Otomatik'),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPermissionsCard() {
+    final role = (_userData?['rol'] ?? '').toString().toUpperCase();
+    if (role != 'ÇALIŞAN') {
+      return const SizedBox.shrink();
+    }
+    final currentPermissions = _readPermissions();
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Çalışan Yetkileri',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            const Text('İlgili işlemler için yetki verin.'),
+            const SizedBox(height: 12),
+            ..._permissionOrder.map((permission) {
+              final label = _permissionLabels[permission] ?? permission;
+              final isEnabled = currentPermissions.contains(permission);
+              return SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(label),
+                value: isEnabled,
+                onChanged: _isSavingPermissions
+                    ? null
+                    : (value) {
+                        final updated = Set<String>.from(currentPermissions);
+                        if (value) {
+                          updated.add(permission);
+                        } else {
+                          updated.remove(permission);
+                        }
+                        _updateUserPermissions(updated);
+                      },
+              );
+            }),
           ],
         ),
       ),
@@ -442,7 +445,8 @@ class _UserProfilePageState extends State<UserProfilePage> {
                       _buildProfileItem('Email', 'email', data['email']),
                       _buildProfileItem('Rol', 'rol', data['rol']),
                       const SizedBox(height: 8),
-                      _buildClassPermissionsCard(),
+                      _buildUserColorCard(),
+                      _buildPermissionsCard(),
                       if (isSelf) ...[
                         const SizedBox(height: 24),
                         ElevatedButton.icon(

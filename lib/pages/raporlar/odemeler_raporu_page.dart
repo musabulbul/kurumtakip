@@ -40,13 +40,13 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ödeme Raporu'),
+        title: const Text('Gelir Raporu'),
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance.collectionGroup('odemeler').snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return const Center(child: Text('Ödemeler yüklenemedi.'));
+            return const Center(child: Text('Gelirler yüklenemedi.'));
           }
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
@@ -104,7 +104,7 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
               _buildSummaryCard(filtered.length, totalAmount),
               const SizedBox(height: 12),
               if (filtered.isEmpty)
-                const Center(child: Text('Filtrelere uygun ödeme yok.'))
+                const Center(child: Text('Filtrelere uygun gelir yok.'))
               else
                 ...filtered.map(_buildPaymentCard),
             ],
@@ -134,7 +134,7 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
         _buildDateRangeInputs(),
         const SizedBox(height: 12),
         _buildDropdown(
-          label: 'Ödeme Türü',
+          label: 'Gelir Türü',
           value: selectedType,
           options: typeOptions,
           onChanged: (value) {
@@ -145,7 +145,7 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
         ),
         const SizedBox(height: 12),
         _buildDropdown(
-          label: 'Ödemeyi Alan',
+          label: 'Geliri Alan',
           value: selectedReceiver,
           options: receiverOptions,
           onChanged: (value) {

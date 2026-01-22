@@ -1,1 +1,58 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"kurumtakipapp","appId":"1:694457330631:android:d5e2431fb853508f4a07e2","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"kurumtakipapp","appId":"1:694457330631:ios:dfc0c4e7735acfe34a07e2","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}},"macos":{"default":{"projectId":"kurumtakipapp","appId":"1:694457330631:ios:dfc0c4e7735acfe34a07e2","uploadDebugSymbols":false,"fileOutput":"macos/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"kurumtakipapp","configurations":{"android":"1:694457330631:android:d5e2431fb853508f4a07e2","ios":"1:694457330631:ios:dfc0c4e7735acfe34a07e2","macos":"1:694457330631:ios:dfc0c4e7735acfe34a07e2","web":"1:694457330631:web:cd591a68f5aaa8f74a07e2","windows":"1:694457330631:web:0e2189f0703976614a07e2"}}}}},"hosting":{"source":".","ignore":["firebase.json","**/.*","**/node_modules/**"],"frameworksBackend":{"region":"us-central1"}},"storage":{"rules":"storage.rules"}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "kurumtakipapp",
+          "appId": "1:694457330631:android:d5e2431fb853508f4a07e2",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "kurumtakipapp",
+          "appId": "1:694457330631:ios:dfc0c4e7735acfe34a07e2",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "kurumtakipapp",
+          "appId": "1:694457330631:ios:dfc0c4e7735acfe34a07e2",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "kurumtakipapp",
+          "configurations": {
+            "android": "1:694457330631:android:d5e2431fb853508f4a07e2",
+            "ios": "1:694457330631:ios:dfc0c4e7735acfe34a07e2",
+            "macos": "1:694457330631:ios:dfc0c4e7735acfe34a07e2",
+            "web": "1:694457330631:web:cd591a68f5aaa8f74a07e2",
+            "windows": "1:694457330631:web:0e2189f0703976614a07e2"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "source": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "frameworksBackend": {
+      "region": "us-central1"
+    }
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "firestore": {
+    "indexes": "firestore.indexes.json"
+  }
+}

@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart' as launcher;
 import '../controllers/institution_controller.dart';
 import '../utils/phone_utils.dart';
 import '../utils/student_utils.dart';
+import '../utils/text_utils.dart';
 import '../widgets/home_icon_button.dart';
 import 'danisan_profil.dart';
 
@@ -78,15 +79,15 @@ class _DetayliAraState extends State<DetayliAra> {
   }
 
   void _applyFilters() {
-    final query = _searchController.text.trim().toUpperCase();
+    final query = normalizeTr(_searchController.text);
     final genderFilter = _selectedGender;
     _filteredDanisanlar
       ..clear()
       ..addAll(_allDanisanlar.where((danisan) {
-        final name = (danisan['adi'] ?? '').toString().toUpperCase();
-        final surname = (danisan['soyadi'] ?? '').toString().toUpperCase();
-        final phone = _resolvePhone(danisan).toUpperCase();
-        final gender = (danisan['cinsiyet'] ?? '').toString().toUpperCase();
+        final name = normalizeTr((danisan['adi'] ?? '').toString());
+        final surname = normalizeTr((danisan['soyadi'] ?? '').toString());
+        final phone = normalizeTr(_resolvePhone(danisan));
+        final gender = normalizeTr((danisan['cinsiyet'] ?? '').toString());
 
         final matchesSearch = query.isEmpty ||
             name.contains(query) ||
@@ -94,8 +95,8 @@ class _DetayliAraState extends State<DetayliAra> {
             phone.contains(query);
 
         final matchesGender = genderFilter == _genderAll ||
-            (genderFilter == _genderFemale && gender == 'KADIN') ||
-            (genderFilter == _genderMale && gender == 'ERKEK');
+            (genderFilter == _genderFemale && gender == 'kadın') ||
+            (genderFilter == _genderMale && gender == 'erkek');
 
         return matchesSearch && matchesGender;
       }));

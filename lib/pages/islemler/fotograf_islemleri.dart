@@ -1,11 +1,11 @@
 import 'dart:io'; // Android ve iOS için gerekli
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart'; // Resim seçmek için
 import 'package:flutter/foundation.dart' show kIsWeb; // Platform kontrolü için
 import 'package:kurum_takip/widgets/home_icon_button.dart';
+import 'package:kurum_takip/services/photo_storage_service.dart';
 
 import '../../controllers/institution_controller.dart';
 import '../../controllers/user_controller.dart';
@@ -125,9 +125,7 @@ class _StudentPageState extends State<StudentPage> {
   }
 
   Future<void> uploadPhoto(dynamic image, String studentId) async {
-    final storageRef = FirebaseStorage.instance
-        .ref()
-        .child('$kurumkodu/danisanlar/$studentId.jpg');
+    final storageRef = PhotoStorageService.studentProfileRef(kurumkodu, studentId);
 
     if (kIsWeb) {
       // Web platformu için
@@ -239,9 +237,7 @@ class StudentCard extends StatelessWidget {
       child: Column(
         children: [
           FutureBuilder(
-            future: FirebaseStorage.instance
-                .ref('$kurumkodu/danisanlar/${student.id}.jpg')
-                .getDownloadURL(),
+            future: PhotoStorageService.studentProfileRef(kurumkodu, student.id).getDownloadURL(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return CircularProgressIndicator();

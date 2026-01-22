@@ -230,6 +230,7 @@ class _KullaniciEkleState extends State<KullaniciEkle> {
         'email': email,
         'rol': rol,
         'siniflar': <String>[],
+        'yetkiler': <String>[],
         "kisaad": "${adi[0]}.${soyadi.toUpperCase()}",
         "kurumkodu": kurumkodu,
         "olusturulmazamani": Timestamp.now(),

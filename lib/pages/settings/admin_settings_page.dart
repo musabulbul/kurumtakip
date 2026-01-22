@@ -6,6 +6,7 @@ import '../../controllers/user_controller.dart';
 import '../../utils/permission_utils.dart';
 import 'islemler_page.dart';
 import 'mekanlar_page.dart';
+import 'paketler_page.dart';
 import 'saatler_page.dart';
 
 class AdminSettingsPage extends StatefulWidget {
@@ -84,6 +85,16 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
                     onTap: _openIslemlerPage,
                   ),
                 ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.inventory_2_outlined),
+                    title: const Text('Paketler'),
+                    subtitle: const Text('Paket tanımları ve içerikleri'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openPaketlerPage,
+                  ),
+                ),
               ],
             ),
     );
@@ -113,6 +124,15 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
     }
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const IslemlerPage()),
+    );
+  }
+
+  void _openPaketlerPage() {
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const PaketlerPage()),
     );
   }
 }

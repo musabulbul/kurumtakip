@@ -1,0 +1,23 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "islemFotograflari",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "operationKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -28,6 +28,7 @@ class _SaatlerPageState extends State<SaatlerPage> {
   TimeOfDay _startTime = const TimeOfDay(hour: 9, minute: 0);
   TimeOfDay _endTime = const TimeOfDay(hour: 18, minute: 0);
   int _intervalMinutes = 30;
+  bool _endNextDay = false;
 
   static const List<_DayOption> _dayOptions = [
     _DayOption(key: 'mon', label: 'Pazartesi'),
@@ -96,19 +97,24 @@ class _SaatlerPageState extends State<SaatlerPage> {
       if (sessionHours.isNotEmpty) {
         final firstEntry = sessionHours.values.first;
         final values = _asMap(firstEntry);
+        final hasStartMinutes = values.containsKey('startMinutes');
+        final hasEndMinutes = values.containsKey('endMinutes');
         final startMinutes = _parseMinutes(values['startMinutes']);
         final endMinutes = _parseMinutes(values['endMinutes']);
         final intervalMinutes = _parseMinutes(values['intervalMinutes']);
+        final endNextDay = values['endNextDay'] == true;
+        final normalizedEndMinutes = endMinutes % (24 * 60);
 
-        if (startMinutes > 0) {
+        if (hasStartMinutes) {
           _startTime = _timeFromMinutes(startMinutes);
         }
-        if (endMinutes > 0) {
-          _endTime = _timeFromMinutes(endMinutes);
+        if (hasEndMinutes) {
+          _endTime = _timeFromMinutes(normalizedEndMinutes);
         }
         if (intervalMinutes > 0) {
           _intervalMinutes = intervalMinutes;
         }
+        _endNextDay = endNextDay || endMinutes >= 24 * 60;
       }
 
       setState(() {
@@ -191,9 +197,11 @@ class _SaatlerPageState extends State<SaatlerPage> {
     }
 
     final startMinutes = _timeToMinutes(_startTime);
-    final endMinutes = _timeToMinutes(_endTime);
+    final rawEndMinutes = _timeToMinutes(_endTime);
+    final endMinutes =
+        _endNextDay ? rawEndMinutes + 24 * 60 : rawEndMinutes;
 
-    if (endMinutes <= startMinutes) {
+    if (!_endNextDay && endMinutes <= startMinutes) {
       _showSnack('Bitiş saati başlangıç saatinden sonra olmalı.');
       return;
     }
@@ -213,8 +221,9 @@ class _SaatlerPageState extends State<SaatlerPage> {
     for (final day in _selectedDays) {
       sessionHours[day] = {
         'startMinutes': startMinutes,
-        'endMinutes': endMinutes,
+        'endMinutes': rawEndMinutes,
         'intervalMinutes': _intervalMinutes,
+        'endNextDay': _endNextDay,
       };
     }
 
@@ -234,6 +243,11 @@ class _SaatlerPageState extends State<SaatlerPage> {
         },
         SetOptions(merge: true),
       );
+      final updated = Map<String, dynamic>.from(_institution.data);
+      final settings = _asMap(updated['settings']);
+      settings['sessionHours'] = sessionHours;
+      updated['settings'] = settings;
+      _institution.data.value = updated;
       _showSnack('Saatler güncellendi.');
     } catch (error) {
       _showSnack('Saatler güncellenemedi: $error');
@@ -349,6 +363,15 @@ class _SaatlerPageState extends State<SaatlerPage> {
                 subtitle: Text(_formatTime(_endTime)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: _pickEndTime,
+              ),
+              SwitchListTile(
+                value: _endNextDay,
+                onChanged: (value) {
+                  setState(() {
+                    _endNextDay = value;
+                  });
+                },
+                title: const Text('Bitiş ertesi gün'),
               ),
             ],
           ),

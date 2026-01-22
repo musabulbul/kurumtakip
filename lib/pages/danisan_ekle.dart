@@ -6,6 +6,7 @@ import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 import '../controllers/institution_controller.dart';
 import '../utils/phone_utils.dart';
+import '../utils/text_utils.dart';
 
 class DanisanEklePage extends StatefulWidget {
   const DanisanEklePage({super.key});
@@ -20,9 +21,11 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
   final _telefonController = TextEditingController();
   final _adresController = TextEditingController();
   final _aciklamaController = TextEditingController();
+  final _dogumTarihiController = TextEditingController();
   final InstitutionController _kurum = Get.find<InstitutionController>();
 
   String? _selectedGender;
+  DateTime? _selectedBirthDate;
   bool _submitting = false;
 
   @override
@@ -31,6 +34,7 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
     _telefonController.dispose();
     _adresController.dispose();
     _aciklamaController.dispose();
+    _dogumTarihiController.dispose();
     super.dispose();
   }
 
@@ -93,6 +97,34 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
                     onChanged: (value) {
                       setState(() {
                         _selectedGender = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _dogumTarihiController,
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Doğum Tarihi',
+                      prefixIcon: Icon(Icons.cake_outlined),
+                      suffixIcon: Icon(Icons.calendar_today_outlined),
+                    ),
+                    onTap: () async {
+                      final now = DateTime.now();
+                      final initialDate = _selectedBirthDate ?? now;
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: initialDate,
+                        firstDate: DateTime(1900),
+                        lastDate: now,
+                        helpText: 'Doğum tarihi seçin',
+                      );
+                      if (picked == null) {
+                        return;
+                      }
+                      setState(() {
+                        _selectedBirthDate = picked;
+                        _dogumTarihiController.text = DateFormat('dd.MM.yyyy').format(picked);
                       });
                     },
                   ),
@@ -173,10 +205,10 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
     String surname = '';
     String firstName;
     if (nameParts.length >= 2) {
-      surname = nameParts.removeLast().toUpperCase();
-      firstName = nameParts.join(' ').toUpperCase();
+      surname = toUpperCaseTr(nameParts.removeLast());
+      firstName = toUpperCaseTr(nameParts.join(' '));
     } else {
-      firstName = trimmedFullName.toUpperCase();
+      firstName = toUpperCaseTr(trimmedFullName);
     }
     final normalizedPhone = normalizePhone(_telefonController.text.trim());
 
@@ -201,6 +233,8 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
         'adres': _adresController.text.trim(),
         'aciklama': _aciklamaController.text.trim(),
         'kayittarihi': kayitTarihi,
+        if (_selectedBirthDate != null)
+          'dogumtarihi': DateFormat('yyyy-MM-dd').format(_selectedBirthDate!),
         'kurumkodu': kurumKodu,
         'olusturulmaZamani': Timestamp.now(),
       });

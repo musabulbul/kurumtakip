@@ -21,6 +21,7 @@ import 'package:kurum_takip/utils/institution_metadata_utils.dart';
 import 'package:kurum_takip/utils/image_utils.dart';
 import 'package:kurum_takip/utils/student_utils.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
+import 'package:kurum_takip/services/photo_storage_service.dart';
 
 import 'danisan_profil.dart';
 
@@ -703,12 +704,18 @@ class _AraState extends State<PhotoPage> {
       final imageBytes = await pickedImage.readAsBytes();
       final optimizedBytes = optimizeImageBytes(imageBytes, maxDimension: 1080, quality: 72);
 
-      await FirebaseStorage.instance
-          .ref('${kurum.data["kurumkodu"]}/danisanlar/$studentId.jpg')
-          .putData(
-            optimizedBytes,
-            SettableMetadata(contentType: 'image/jpeg'),
-          );
+      final kurumkodu = (kurum.data["kurumkodu"] ?? '').toString();
+      final ref = PhotoStorageService.studentProfileRef(kurumkodu, studentId);
+      if (kDebugMode) {
+        debugPrint('[Photo] upload profile start path=${ref.fullPath}');
+      }
+      await ref.putData(
+        optimizedBytes,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      if (kDebugMode) {
+        debugPrint('[Photo] upload profile done path=${ref.fullPath}');
+      }
 
       if (!mounted) {
         return;
@@ -754,17 +761,31 @@ class _AraState extends State<PhotoPage> {
     }
   }
 
-  Widget _buildImagePlaceholder() {
+  Widget _buildImagePlaceholder({bool showText = true}) {
     final theme = Theme.of(context);
     return Container(
       color: theme.colorScheme.surfaceVariant.withOpacity(
         theme.brightness == Brightness.dark ? 0.3 : 0.2,
       ),
       child: Center(
-        child: Icon(
-          Icons.person_outline,
-          size: 52,
-          color: theme.colorScheme.onSurface.withOpacity(0.5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.person_outline,
+              size: 52,
+              color: theme.colorScheme.onSurface.withOpacity(0.5),
+            ),
+            if (showText) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Henüz fotoğraf yok',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.7),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -787,14 +808,21 @@ class _AraState extends State<PhotoPage> {
           return Stack(
             fit: StackFit.expand,
             children: [
-              _buildImagePlaceholder(),
+              _buildImagePlaceholder(showText: false),
               Center(
                 child: CircularProgressIndicator(value: progress),
               ),
             ],
           );
         },
-        errorBuilder: (_, __, ___) => _buildImagePlaceholder(),
+        errorBuilder: (_, error, stackTrace) {
+          if (kDebugMode) {
+            debugPrint(
+              '[Photo] Image.network error url=${_imageUrlCache[id]} error=$error',
+            );
+          }
+          return _buildImagePlaceholder();
+        },
       );
     } else {
       return FutureBuilder<String?>(
@@ -804,18 +832,25 @@ class _AraState extends State<PhotoPage> {
             return Stack(
               fit: StackFit.expand,
               children: [
-                _buildImagePlaceholder(),
+                _buildImagePlaceholder(showText: false),
                 const Center(child: CircularProgressIndicator()),
               ],
             );
           } else if (snapshot.hasError || snapshot.data == null) {
-            return _buildImagePlaceholder();
+            return _buildImagePlaceholder(showText: true);
           } else {
             _imageUrlCache[id] = snapshot.data!;
             return Image.network(
               snapshot.data!,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => _buildImagePlaceholder(),
+              errorBuilder: (_, error, stackTrace) {
+                if (kDebugMode) {
+                  debugPrint(
+                    '[Photo] Image.network error url=${snapshot.data} error=$error',
+                  );
+                }
+                return _buildImagePlaceholder(showText: true);
+              },
             );
           }
         },
@@ -870,8 +905,10 @@ class _AraState extends State<PhotoPage> {
             final optimizedBytes = optimizeImageBytes(file.bytes!, maxDimension: 1080, quality: 72);
 
             try {
-              final ref = _storage
-                  .ref('${kurum.data["kurumkodu"]}/danisanlar/$fileNameWithoutExtension.jpg');
+              final kurumkodu = (kurum.data["kurumkodu"] ?? '').toString();
+              final studentId =
+                  studentLookup[fileNameWithoutExtension] ?? fileNameWithoutExtension;
+              final ref = PhotoStorageService.studentProfileRef(kurumkodu, studentId);
               await ref.putData(
                 optimizedBytes,
                 SettableMetadata(contentType: 'image/jpeg'),
@@ -879,7 +916,8 @@ class _AraState extends State<PhotoPage> {
               print('Uploaded: ${file.name}');
               uploadedCount++;
               if (mounted) {
-                final cacheKey = studentLookup[fileNameWithoutExtension] ?? fileNameWithoutExtension;
+                final cacheKey =
+                    studentLookup[fileNameWithoutExtension] ?? fileNameWithoutExtension;
                 setState(() {
                   _imageUrlCache.remove(cacheKey);
                   _imageUrlCache.remove(fileNameWithoutExtension);
@@ -925,22 +963,53 @@ class _AraState extends State<PhotoPage> {
 
   Future<String?> getFirstImageUrlById(String id, {List<String> fallbackIds = const []}) async {
     try {
-      final kurumkodu = kurum.data["kurumkodu"];
-      final storageRef = FirebaseStorage.instance.ref('$kurumkodu/danisanlar');
+      final kurumkodu = (kurum.data["kurumkodu"] ?? '').toString();
+      if (kurumkodu.isEmpty) {
+        return null;
+      }
       final candidates = <String>{
         id.trim(),
         ...fallbackIds.map((e) => e.trim()),
       }.where((element) => element.isNotEmpty).toList();
+      if (kDebugMode) {
+        debugPrint('[Photo] getFirstImageUrlById kurum=$kurumkodu candidates=$candidates');
+      }
 
+      for (final candidate in candidates) {
+        try {
+          final url =
+              await PhotoStorageService.studentProfileRef(kurumkodu, candidate).getDownloadURL();
+          if (kDebugMode) {
+            debugPrint('[Photo] profile url found newPath candidate=$candidate');
+          }
+          return url;
+        } on FirebaseException catch (error) {
+          if (kDebugMode) {
+            debugPrint(
+                '[Photo] profile url miss newPath candidate=$candidate code=${error.code}');
+          }
+          if (error.code != 'object-not-found') {
+            rethrow;
+          }
+        }
+      }
+
+      final legacyRef = FirebaseStorage.instance.ref('$kurumkodu/danisanlar');
       const extensions = ['jpg', 'jpeg', 'png', 'JPG', 'JPEG', 'PNG'];
-
       for (final candidate in candidates) {
         for (final ext in extensions) {
           try {
-            final url = await storageRef.child('$candidate.$ext').getDownloadURL();
+            final url = await legacyRef.child('$candidate.$ext').getDownloadURL();
+            if (kDebugMode) {
+              debugPrint('[Photo] profile url found legacy candidate=$candidate ext=$ext');
+            }
             return url;
           } on FirebaseException catch (error) {
             if (error.code == 'object-not-found') {
+              if (kDebugMode) {
+                debugPrint(
+                    '[Photo] profile url miss legacy candidate=$candidate ext=$ext');
+              }
               continue;
             }
             rethrow;
@@ -948,6 +1017,9 @@ class _AraState extends State<PhotoPage> {
         }
       }
 
+      if (kDebugMode) {
+        debugPrint('[Photo] profile url not found for kurum=$kurumkodu');
+      }
       print("No file found with the given ID.");
       return null;
     } catch (e) {
@@ -975,9 +1047,8 @@ class _AraState extends State<PhotoPage> {
                   TextButton(
                       onPressed: () {
                         try {
-                          FirebaseStorage.instance
-                              .ref('${kurum.data["kurumkodu"]}/danisanlar/$studentId.jpg')
-                              .delete();
+                          final kurumkodu = (kurum.data["kurumkodu"] ?? '').toString();
+                          PhotoStorageService.studentProfileRef(kurumkodu, studentId).delete();
                         } catch (e) {
                           print(e);
                         }

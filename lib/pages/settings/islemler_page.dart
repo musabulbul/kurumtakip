@@ -296,9 +296,10 @@ class _IslemlerPageState extends State<IslemlerPage> {
                   return;
                 }
                 final rawPrice = priceController.text.trim();
-                final parsedPrice = _parsePrice(rawPrice);
-                if (parsedPrice <= 0) {
-                  _showSnack('Fiyat 0\'dan büyük olmalı.');
+                final double? parsedPrice =
+                    rawPrice.isEmpty ? 0.0 : _tryParsePrice(rawPrice);
+                if (parsedPrice == null || parsedPrice < 0) {
+                  _showSnack('Fiyat boş, 0 veya pozitif bir değer olmalı.');
                   return;
                 }
                 final sessionCount =
@@ -324,8 +325,15 @@ class _IslemlerPageState extends State<IslemlerPage> {
   }
 
   double _parsePrice(String value) {
-    final normalized = value.replaceAll(',', '.');
-    return double.tryParse(normalized) ?? 0;
+    return _tryParsePrice(value) ?? 0;
+  }
+
+  double? _tryParsePrice(String value) {
+    final normalized = value.replaceAll(',', '.').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    return double.tryParse(normalized);
   }
 
   String _formatPrice(double price) {

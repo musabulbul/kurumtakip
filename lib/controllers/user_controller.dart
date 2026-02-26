@@ -9,10 +9,20 @@ class UserController extends GetxController {
   String? _impersonatedInstitutionId;
 
   // Kullanıcı bilgilerini al
-  void getUserInfo(String userDocId) async {
+  Future<void> getUserInfo(String userDocId) async {
+    final trimmedUserDocId = userDocId.trim();
+    if (trimmedUserDocId.isEmpty) {
+      data.value = {};
+      isLoading(false);
+      return;
+    }
     try {
-      isLoading(true);  // Yükleniyor olduğunu belirt
-      var userDoc = await FirebaseFirestore.instance.collection('kullanicilar').doc(userDocId).get();
+      isLoading(true); // Yükleniyor olduğunu belirt
+      final userDoc = await FirebaseFirestore.instance
+          .collection('kullanicilar')
+          .doc(trimmedUserDocId)
+          .get()
+          .timeout(const Duration(seconds: 12));
       if (userDoc.exists) {
         final fetched = userDoc.data() as Map<String, dynamic>;
         data.value = fetched;
@@ -20,12 +30,18 @@ class UserController extends GetxController {
         _impersonatedRole = null;
         _impersonatedInstitutionId = null;
       } else {
-       
+        data.value = {};
+        _originalData = null;
+        _impersonatedRole = null;
+        _impersonatedInstitutionId = null;
       }
     } catch (e) {
-     
+      // Sessizce yutmak yerine konsola yazdırıp UI'nin kilitlenmesini önle.
+      // ignore: avoid_print
+      print('[user_controller] getUserInfo error | $e');
+      data.value = {};
     } finally {
-      isLoading(false);  // Yükleme işlemi bitti
+      isLoading(false); // Yükleme işlemi bitti
     }
   }
 

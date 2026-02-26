@@ -20,6 +20,7 @@ class _KurumlarPageState extends State<KurumlarPage> {
   String? _errorMessage;
   final List<Map<String, dynamic>> _institutions = [];
   List<Map<String, dynamic>> _filteredInstitutions = [];
+  final List<Map<String, dynamic>> _smsProviders = [];
 
   @override
   void initState() {
@@ -28,6 +29,7 @@ class _KurumlarPageState extends State<KurumlarPage> {
       _filterInstitutions(_searchController.text);
     });
     _loadInstitutions();
+    _loadSmsProviders();
   }
 
   @override
@@ -62,6 +64,8 @@ class _KurumlarPageState extends State<KurumlarPage> {
           'ilgiliKisiTelefon': data['ilgiliKisiTelefon'] ?? '',
           'adres': data['adres'] ?? '',
           'ekBilgiler': data['ekBilgiler'] ?? '',
+          'smsProviderId': data['smsProviderId'] ?? '',
+          'smsApiKey': data['smsApiKey'] ?? '',
           'smsApiUsername': data['smsApiUsername'] ?? '',
           'smsApiPassword': data['smsApiPassword'] ?? '',
           'smsApiBaslik': data['smsApiBaslik'] ?? '',
@@ -81,6 +85,32 @@ class _KurumlarPageState extends State<KurumlarPage> {
         _isLoading = false;
         _errorMessage = 'Kurumlar yüklenirken hata oluştu: $e';
       });
+    }
+  }
+
+  Future<void> _loadSmsProviders() async {
+    try {
+      final snapshot = await _firestore.collection('sms_providers').get();
+      final items = snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'docId': doc.id,
+          'name': data['name'] ?? doc.id,
+        };
+      }).toList();
+
+      items.sort((a, b) => (a['name'] ?? '')
+          .toString()
+          .toLowerCase()
+          .compareTo((b['name'] ?? '').toString().toLowerCase()));
+
+      setState(() {
+        _smsProviders
+          ..clear()
+          ..addAll(items);
+      });
+    } catch (_) {
+      // Sessiz geç, kurum ekranı çalışmaya devam etsin.
     }
   }
 
@@ -105,6 +135,8 @@ class _KurumlarPageState extends State<KurumlarPage> {
   }
 
   Future<void> _openInstitutionDialog({Map<String, dynamic>? institution}) async {
+    await _loadSmsProviders();
+
     final bool isEdit = institution != null;
     final formKey = GlobalKey<FormState>();
 
@@ -128,39 +160,42 @@ class _KurumlarPageState extends State<KurumlarPage> {
         TextEditingController(text: institution?['adres'] ?? '');
     final TextEditingController ekBilgilerController =
         TextEditingController(text: institution?['ekBilgiler'] ?? '');
+    final TextEditingController smsProviderIdController =
+        TextEditingController(text: institution?['smsProviderId'] ?? '');
     final TextEditingController smsApiUsernameController =
         TextEditingController(text: institution?['smsApiUsername'] ?? '');
     final TextEditingController smsApiPasswordController =
         TextEditingController(text: institution?['smsApiPassword'] ?? '');
     final TextEditingController smsApiBaslikController =
         TextEditingController(text: institution?['smsApiBaslik'] ?? '');
-    final TextEditingController smsApiTurController =
-        TextEditingController(
-            text: (institution?['smsApiTur'] ?? 'normal').toString());
+
+    String selectedProviderId = smsProviderIdController.text.trim();
 
     await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) {
-        return AlertDialog(
-          title: Text(isEdit ? 'Kurum Bilgilerini Güncelle' : 'Yeni Kurum'),
-          content: SingleChildScrollView(
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildTextField(
-                    label: 'Kurum Kodu',
-                    controller: kurumkoduController,
-                    readOnly: isEdit,
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Kurum kodu zorunludur';
-                      }
-                      return null;
-                    },
-                  ),
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            return AlertDialog(
+              title: Text(isEdit ? 'Kurum Bilgilerini Güncelle' : 'Yeni Kurum'),
+              content: SingleChildScrollView(
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildTextField(
+                        label: 'Kurum Kodu',
+                        controller: kurumkoduController,
+                        readOnly: isEdit,
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Kurum kodu zorunludur';
+                          }
+                          return null;
+                        },
+                      ),
                   _buildTextField(
                     label: 'Kısa Ad',
                     controller: kisaAdController,
@@ -217,6 +252,51 @@ class _KurumlarPageState extends State<KurumlarPage> {
                     ),
                   ),
                   const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: () {
+                      if (selectedProviderId.isEmpty) {
+                        return null;
+                      }
+                      final exists = _smsProviders.any(
+                        (provider) => (provider['docId'] ?? '').toString() == selectedProviderId,
+                      );
+                      return exists ? selectedProviderId : null;
+                    }(),
+                    decoration: const InputDecoration(
+                      labelText: 'SMS Sağlayıcı',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: '',
+                        child: Text('Seçiniz'),
+                      ),
+                      ..._smsProviders.map(
+                        (provider) => DropdownMenuItem(
+                          value: provider['docId'] as String,
+                          child: Text(
+                            (provider['name'] ?? provider['docId']).toString(),
+                          ),
+                        ),
+                      ),
+                      if (selectedProviderId.isNotEmpty &&
+                          !_smsProviders.any(
+                            (provider) =>
+                                (provider['docId'] ?? '').toString() ==
+                                selectedProviderId,
+                          ))
+                        DropdownMenuItem(
+                          value: selectedProviderId,
+                          child: Text('Mevcut: $selectedProviderId'),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      setLocalState(() {
+                        selectedProviderId = value ?? '';
+                        smsProviderIdController.text = selectedProviderId;
+                      });
+                    },
+                  ),
                   _buildTextField(
                     label: 'API Kullanıcı Adı',
                     controller: smsApiUsernameController,
@@ -231,80 +311,81 @@ class _KurumlarPageState extends State<KurumlarPage> {
                     controller: smsApiBaslikController,
                     hintText: 'Örn: OKULADI',
                   ),
-                  _buildTextField(
-                    label: 'Tür (normal/turkce)',
-                    controller: smsApiTurController,
-                    hintText: 'Varsayılan: normal',
+                  const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.info_outline),
+                    title: Text('Mesaj Türü'),
+                    subtitle: Text('turkce (varsayılan)'),
                   ),
-                ],
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('İptal'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (!formKey.currentState!.validate()) {
-                  return;
-                }
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('İptal'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (!formKey.currentState!.validate()) {
+                      return;
+                    }
 
-                final payload = {
-                  'kisaad': kisaAdController.text.trim(),
-                  'kurumadi': kurumAdiController.text.trim(),
-                  'kurumkodu': kurumkoduController.text.trim(),
-                  'kurumturu': kurumTuruController.text.trim(),
-                  'baslangicTarihi': baslangicController.text.trim(),
-                  'bitisTarihi': bitisController.text.trim(),
-                  'ilgiliKisiAdi': ilgiliKisiAdiController.text.trim(),
-                  'ilgiliKisiTelefon': ilgiliKisiTelefonController.text.trim(),
-                  'adres': adresController.text.trim(),
-                  'ekBilgiler': ekBilgilerController.text.trim(),
-                  'smsApiUsername': smsApiUsernameController.text.trim(),
-                  'smsApiPassword': smsApiPasswordController.text.trim(),
-                  'smsApiBaslik': smsApiBaslikController.text.trim(),
-                  'smsApiTur': smsApiTurController.text.trim().isEmpty
-                      ? 'normal'
-                      : smsApiTurController.text.trim(),
-                };
+                    final payload = {
+                      'kisaad': kisaAdController.text.trim(),
+                      'kurumadi': kurumAdiController.text.trim(),
+                      'kurumkodu': kurumkoduController.text.trim(),
+                      'kurumturu': kurumTuruController.text.trim(),
+                      'baslangicTarihi': baslangicController.text.trim(),
+                      'bitisTarihi': bitisController.text.trim(),
+                      'ilgiliKisiAdi': ilgiliKisiAdiController.text.trim(),
+                      'ilgiliKisiTelefon': ilgiliKisiTelefonController.text.trim(),
+                      'adres': adresController.text.trim(),
+                      'ekBilgiler': ekBilgilerController.text.trim(),
+                      'smsProviderId': smsProviderIdController.text.trim(),
+                      'smsApiUsername': smsApiUsernameController.text.trim(),
+                      'smsApiPassword': smsApiPasswordController.text.trim(),
+                      'smsApiBaslik': smsApiBaslikController.text.trim(),
+                      'smsApiTur': 'turkce',
+                    };
 
-                try {
-                  await _saveInstitution(
-                    docId: institution?['docId'],
-                    data: payload,
-                    isEdit: isEdit,
-                  );
+                    try {
+                      await _saveInstitution(
+                        docId: institution?['docId'],
+                        data: payload,
+                        isEdit: isEdit,
+                      );
 
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          isEdit
-                              ? 'Kurum bilgileri güncellendi.'
-                              : 'Kurum başarıyla oluşturuldu.',
-                        ),
-                      ),
-                    );
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content:
-                            Text('Kurum kaydedilirken hata oluştu: $e'),
-                      ),
-                    );
-                  }
-                } finally {
-                  await _loadInstitutions();
-                }
-              },
-              child: Text(isEdit ? 'Güncelle' : 'Kaydet'),
-            ),
-          ],
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              isEdit
+                                  ? 'Kurum bilgileri güncellendi.'
+                                  : 'Kurum başarıyla oluşturuldu.',
+                            ),
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Kurum kaydedilirken hata oluştu: $e'),
+                          ),
+                        );
+                      }
+                    } finally {
+                      await _loadInstitutions();
+                    }
+                  },
+                  child: Text(isEdit ? 'Güncelle' : 'Kaydet'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -425,7 +506,10 @@ class _KurumlarPageState extends State<KurumlarPage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _loadInstitutions,
+            onPressed: () async {
+              await _loadInstitutions();
+              await _loadSmsProviders();
+            },
             tooltip: 'Yenile',
           ),
           const HomeIconButton(),
@@ -518,6 +602,11 @@ class _KurumlarPageState extends State<KurumlarPage> {
                                             .isNotEmpty)
                                           Text('Ek Bilgiler: '
                                               '${institution['ekBilgiler']}'),
+                                        if ((institution['smsProviderId'] ?? '')
+                                            .toString()
+                                            .isNotEmpty)
+                                          Text('SMS Provider: '
+                                              '${institution['smsProviderId']}'),
                                         if ((institution['smsApiUsername'] ?? '')
                                             .toString()
                                             .isNotEmpty)

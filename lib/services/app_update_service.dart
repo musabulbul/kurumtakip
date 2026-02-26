@@ -114,7 +114,6 @@ class AppUpdateService {
         message: message,
       );
     } catch (error) {
-      print('AppUpdateService.checkForUpdate error: $error');
       return null;
     }
   }

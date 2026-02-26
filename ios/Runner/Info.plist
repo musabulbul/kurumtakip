@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Danışan fotoğraflarını çekip profil ve işlem kayıtlarına eklemek için kamera erişimi gerekir.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Danışan fotoğraflarını galeriden seçip uygulamaya yüklemek için fotoğraf kitaplığı erişimi gerekir.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>İndirilen görselleri cihazınıza kaydetmek için fotoğraf kitaplığına yazma izni gerekir.</string>
 </dict>
 </plist>

@@ -16,6 +16,7 @@ import 'package:kurum_takip/controllers/user_controller.dart';
 
 import 'package:kurum_takip/pages/kullanicilar.dart';
 import 'package:kurum_takip/pages/kurumlar.dart';
+import 'package:kurum_takip/pages/sms_providers.dart';
 import 'package:kurum_takip/widgets/institution_switch_dialog.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
@@ -26,6 +27,7 @@ import '../utils/student_utils.dart';
 import '../utils/permission_utils.dart';
 import '../utils/text_utils.dart';
 import 'settings/admin_settings_page.dart';
+import 'settings/gizlilik_politikasi_page.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -299,6 +301,19 @@ class _SearchPageState extends State<SearchPage> {
                     );
                   },
                 ),
+              if (user.data['ustyonetici']?.toString().toLowerCase() == 'admin')
+                ListTile(
+                  title: const Text('SMS Sağlayıcılar'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const SmsProvidersPage(),
+                      ),
+                    );
+                  },
+                ),
               if (isManagerUser(user.data))
                 ListTile(
                   title: const Text("Ayarlar"),
@@ -312,6 +327,18 @@ class _SearchPageState extends State<SearchPage> {
                     );
                   },
                 ),
+              ListTile(
+                title: const Text('Gizlilik Politikasi'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const GizlilikPolitikasiPage(),
+                    ),
+                  );
+                },
+              ),
               ListTile(
                 title: const Text('Şifre Değiştir'),
                 onTap: () async {

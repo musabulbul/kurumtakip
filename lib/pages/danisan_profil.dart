@@ -17,14 +17,12 @@ import '../utils/phone_utils.dart';
 import '../utils/permission_utils.dart';
 import '../utils/text_utils.dart';
 import '../services/photo_storage_service.dart';
-import '../services/whatsapp_api.dart';
+import '../services/sms_service.dart';
 
 enum _ProfileMenuAction { delete }
 
 enum _ReservationMenuAction {
   delete,
-  sendWhatsAppInfo,
-  sendWhatsAppReminder,
 }
 
 enum _PackageMenuAction { complete }
@@ -2331,15 +2329,18 @@ class _DanisanProfilState extends State<DanisanProfil> {
                             );
                             return;
                           }
-                          final price = _parsePrice(priceController.text.trim());
-                          if (price <= 0) {
+                          final rawPrice = priceController.text.trim();
+                          final double? price =
+                              _tryParsePrice(rawPrice, emptyAsZero: true);
+                          if (price == null || price < 0) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
-                                content: Text('Geçerli bir ücret girin.'),
+                                content: Text('Ücret boş, 0 veya pozitif bir değer olmalı.'),
                               ),
                             );
                             return;
                           }
+                          final resolvedPrice = price;
                           setState(() {
                             isSaving = true;
                           });
@@ -2353,7 +2354,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
                           final saved = await _saveManualOperation(
                             location: selectedLocation!,
                             operation: selectedOperation!,
-                            price: price,
+                            price: resolvedPrice,
                             assignedUserId: performerId,
                             assignedUserName: performerName.isNotEmpty
                                 ? performerName
@@ -2835,24 +2836,9 @@ class _DanisanProfilState extends State<DanisanProfil> {
                         case _ReservationMenuAction.delete:
                           _confirmDeleteReservation(entry);
                           break;
-                        case _ReservationMenuAction.sendWhatsAppInfo:
-                          _sendReservationWhatsApp(entry, isReminder: false);
-                          break;
-                        case _ReservationMenuAction.sendWhatsAppReminder:
-                          _sendReservationWhatsApp(entry, isReminder: true);
-                          break;
                       }
                     },
                     itemBuilder: (context) => const [
-                      PopupMenuItem(
-                        value: _ReservationMenuAction.sendWhatsAppInfo,
-                        child: Text('WhatsApp randevu bilgisi gönder'),
-                      ),
-                      PopupMenuItem(
-                        value: _ReservationMenuAction.sendWhatsAppReminder,
-                        child: Text('WhatsApp randevu hatırlatma gönder'),
-                      ),
-                      PopupMenuDivider(),
                       PopupMenuItem(
                         value: _ReservationMenuAction.delete,
                         child: Text('Sil'),
@@ -3261,19 +3247,22 @@ class _DanisanProfilState extends State<DanisanProfil> {
                   onPressed: isSaving
                       ? null
                       : () async {
-                          final price = isPackageOperation
+                          final rawPrice = priceController.text.trim();
+                          final double? price = isPackageOperation
                               ? 0.0
-                              : _parsePrice(priceController.text.trim());
-                          if (!isPackageOperation && price <= 0) {
+                              : _tryParsePrice(rawPrice, emptyAsZero: true);
+                          if (!isPackageOperation &&
+                              (price == null || price < 0)) {
                             if (mounted) {
                               ScaffoldMessenger.of(parentContext).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Geçerli bir fiyat girin.'),
+                                  content: Text('Fiyat boş, 0 veya pozitif bir değer olmalı.'),
                                 ),
                               );
                             }
                             return;
                           }
+                          final resolvedPrice = price ?? 0.0;
                           setState(() {
                             isSaving = true;
                           });
@@ -3287,7 +3276,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
                           final saved = await _completeReservationOperation(
                             entry: entry,
                             operation: operation,
-                            price: price,
+                            price: resolvedPrice,
                             performedById: performerId,
                             performedByName:
                                 performerName.isNotEmpty ? performerName : rawPerformerName,
@@ -4315,6 +4304,9 @@ class _DanisanProfilState extends State<DanisanProfil> {
     final operations = allowedOperations ?? await _fetchOperationOptions(kurumkodu);
     final users = await _fetchUserOptions(kurumkodu);
     final isPackageReservation = package != null;
+    final smsProviderId = (kurum.data['smsProviderId'] ?? '').toString().trim();
+    final canSendReservationInfo = smsProviderId.isNotEmpty &&
+        await _hasValidSmsProvider(smsProviderId);
 
     if (!mounted) {
       return;
@@ -4331,7 +4323,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
     ];
     final removedEntries = <_ReservationOperationDraft>[];
     var isSaving = false;
-    var sendReservationInfo = false;
+    var sendReservationInfo = canSendReservationInfo;
 
     Future<void> applyDefaultUser(
       _OperationOption? operation,
@@ -4529,19 +4521,20 @@ class _DanisanProfilState extends State<DanisanProfil> {
                         label: const Text('İşlem Ekle'),
                       ),
                     ),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: sendReservationInfo,
-                      onChanged: isSaving
-                          ? null
-                          : (value) {
-                              setState(() {
-                                sendReservationInfo = value ?? false;
-                              });
-                            },
-                      title: const Text('Rezervasyon bilgisi gönder'),
-                      controlAffinity: ListTileControlAffinity.leading,
-                    ),
+                    if (canSendReservationInfo)
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: sendReservationInfo,
+                        onChanged: isSaving
+                            ? null
+                            : (value) {
+                                setState(() {
+                                  sendReservationInfo = value ?? true;
+                                });
+                              },
+                        title: const Text('Rezervasyon bilgisi gönder'),
+                        controlAffinity: ListTileControlAffinity.leading,
+                      ),
                   ],
                 ),
               ),
@@ -4576,16 +4569,21 @@ class _DanisanProfilState extends State<DanisanProfil> {
                               );
                               return;
                             }
+                            final rawPrice = entry.priceController.text.trim();
                             final price = isPackageReservation
                                 ? 0.0
-                                : _parsePrice(entry.priceController.text.trim());
-                            if (!isPackageReservation && price <= 0) {
+                                : _tryParsePrice(rawPrice, emptyAsZero: true);
+                            if (!isPackageReservation &&
+                                (price == null || price < 0)) {
                               _logReservation('create validation failed: invalid price', {
                                 'index': index,
-                                'rawPrice': entry.priceController.text.trim(),
+                                'rawPrice': rawPrice,
                               });
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Geçerli bir ücret girin.')),
+                                const SnackBar(
+                                  content:
+                                      Text('Ücret boş, 0 veya pozitif bir değer olmalı.'),
+                                ),
                               );
                               return;
                             }
@@ -4615,6 +4613,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
                             selection: selection,
                             studentData: data,
                             operations: operationsToSave,
+                            sendReservationInfo: sendReservationInfo,
                           );
                           if (!mounted || !dialogContext.mounted) {
                             return;
@@ -4624,13 +4623,6 @@ class _DanisanProfilState extends State<DanisanProfil> {
                           });
                           _logReservation('create save result', {'saved': saved});
                           if (saved) {
-                            if (sendReservationInfo) {
-                              await _sendReservationInfoViaSystem(
-                                selection: selection,
-                                operations: operationsToSave,
-                                isReminder: false,
-                              );
-                            }
                             Navigator.of(dialogContext).pop(true);
                           }
                         },
@@ -5188,10 +5180,14 @@ class _DanisanProfilState extends State<DanisanProfil> {
                               );
                               return;
                             }
-                            final opPrice = _parsePrice(entry.priceController.text.trim());
-                            if (opPrice <= 0) {
+                            final rawPrice = entry.priceController.text.trim();
+                            final opPrice = _tryParsePrice(rawPrice, emptyAsZero: true);
+                            if (opPrice == null || opPrice < 0) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Geçerli bir ücret girin.')),
+                                const SnackBar(
+                                  content:
+                                      Text('Ücret boş, 0 veya pozitif bir değer olmalı.'),
+                                ),
                               );
                               return;
                             }
@@ -5258,6 +5254,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
     required _ReservationSelection selection,
     required Map<String, dynamic> studentData,
     required List<_ReservationOperationData> operations,
+    required bool sendReservationInfo,
   }) async {
     final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
     if (kurumkodu.isEmpty) {
@@ -5314,9 +5311,22 @@ class _DanisanProfilState extends State<DanisanProfil> {
     try {
       final docRef = await _reservationCollection.add(payload);
       _logReservation('save success', {'docId': docRef.id});
+      SmsServiceResult? smsResult;
+      if (sendReservationInfo) {
+        smsResult = await _sendReservationInfoSms(
+          selection: selection,
+          studentData: studentData,
+          operations: operations,
+        );
+      }
       if (mounted) {
+        final message = smsResult == null
+            ? 'Rezervasyon kaydedildi.'
+            : (smsResult.success
+                ? 'Rezervasyon kaydedildi. Bilgilendirme SMSi gönderildi.'
+                : 'Rezervasyon kaydedildi ancak SMS gönderilemedi: ${smsResult.message}');
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Rezervasyon kaydedildi.')),
+          SnackBar(content: Text(message)),
         );
       }
       return true;
@@ -6323,118 +6333,6 @@ class _DanisanProfilState extends State<DanisanProfil> {
     return operationNames.join(', ');
   }
 
-  Future<void> _showWhatsAppPairingDialog({
-    required String initialPhone,
-  }) async {
-    final phoneController = TextEditingController(text: initialPhone);
-    String? pairingCode;
-    String? errorMessage;
-    var isLoading = false;
-    final kurumId = (kurum.data['kurumkodu'] ?? '').toString().trim();
-
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              title: const Text('WhatsApp Oturum Açma'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Eşleştirme kodu almak için WhatsApp numarasını girin.'),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: phoneController,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'WhatsApp telefon numarası',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  if (pairingCode != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      'Eşleştirme Kodu: $pairingCode',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ],
-                  if (errorMessage != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      errorMessage!,
-                      style: const TextStyle(color: Colors.red),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: isLoading ? null : () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Kapat'),
-                ),
-                FilledButton(
-                  onPressed: isLoading
-                      ? null
-                      : () async {
-                          final phone = phoneController.text.trim();
-                          if (phone.isEmpty) {
-                            setState(() {
-                              errorMessage = 'Telefon numarası gerekli.';
-                            });
-                            return;
-                          }
-                          setState(() {
-                            isLoading = true;
-                            errorMessage = null;
-                            pairingCode = null;
-                          });
-                          try {
-                            final api = WhatsAppApi();
-                            final code = await api.requestPairingCode(
-                              phone: phone,
-                              kurumId: kurumId.isNotEmpty ? kurumId : null,
-                            );
-                            if (!dialogContext.mounted) return;
-                            setState(() {
-                              pairingCode = code;
-                            });
-                          } catch (error) {
-                            if (!dialogContext.mounted) return;
-                            setState(() {
-                              final errorStr = error.toString();
-                              if (errorStr.contains('504') || errorStr.toLowerCase().contains('timeout')) {
-                                errorMessage = 'Sunucu yanıt vermedi (Zaman aşımı). Lütfen tekrar deneyin.';
-                              } else {
-                                errorMessage = 'Kod alınamadı: $errorStr';
-                              }
-                            });
-                          } finally {
-                            if (!dialogContext.mounted) return;
-                            setState(() {
-                              isLoading = false;
-                            });
-                          }
-                        },
-                  child: isLoading
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Kod Al'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    phoneController.dispose();
-  }
-
   String _composeReservationMessage({
     required String name,
     required _ReservationEntry entry,
@@ -6443,10 +6341,6 @@ class _DanisanProfilState extends State<DanisanProfil> {
     final dateLabel = _buildReservationDateLabel(entry);
     final timeLabel = _buildReservationStartTimeLabel(entry);
     final operationLabel = _buildReservationOperationsLabel(entry);
-    final firmName =
-        (kurum.data['kurumadi'] ?? '').toString().trim().isNotEmpty
-            ? (kurum.data['kurumadi'] ?? '').toString().trim()
-            : 'Kurumumuz';
 
     return isReminder
         ? [
@@ -6454,15 +6348,70 @@ class _DanisanProfilState extends State<DanisanProfil> {
             '$dateLabel tarihinde saat $timeLabel için '
                 '$operationLabel randevunuzu hatırlatırız.',
             'Sağlıklı günler dileriz.',
-            firmName,
           ].join('\n')
         : [
             'Sevgili $name.',
             '$dateLabel tarihinde saat $timeLabel için '
                 '$operationLabel randevunuz oluşturulmuştur.',
             'Sağlıklı günler dileriz.',
-            firmName,
           ].join('\n');
+  }
+
+  Future<SmsServiceResult> _sendReservationInfoSms({
+    required _ReservationSelection selection,
+    required Map<String, dynamic> studentData,
+    required List<_ReservationOperationData> operations,
+  }) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString().trim();
+    if (kurumkodu.isEmpty) {
+      return SmsServiceResult(success: false, message: 'Kurum bilgisi bulunamadı.');
+    }
+
+    final providerId = (kurum.data['smsProviderId'] ?? '').toString().trim();
+    if (providerId.isEmpty) {
+      return SmsServiceResult(success: false, message: 'SMS sağlayıcısı tanımlı değil.');
+    }
+
+    final phone = _resolvePhone(studentData);
+    if (phone.isEmpty) {
+      return SmsServiceResult(success: false, message: 'Geçerli telefon numarası bulunamadı.');
+    }
+
+    final reservationEntry = _buildReservationEntryForSend(
+      selection: selection,
+      operations: operations,
+    );
+    final firstName = (studentData['adi'] ?? '').toString().trim();
+    final fullName = _resolveStudentName(studentData);
+    final targetName = firstName.isNotEmpty ? firstName : fullName;
+    final message = _composeReservationMessage(
+      name: targetName,
+      entry: reservationEntry,
+      isReminder: false,
+    );
+
+    return SmsService().sendSms(
+      kurumId: kurumkodu,
+      providerId: providerId,
+      phones: [phone],
+      message: message,
+    );
+  }
+
+  Future<bool> _hasValidSmsProvider(String providerId) async {
+    final trimmedId = providerId.trim();
+    if (trimmedId.isEmpty) {
+      return false;
+    }
+    try {
+      final providerDoc = await FirebaseFirestore.instance
+          .collection('sms_providers')
+          .doc(trimmedId)
+          .get();
+      return providerDoc.exists;
+    } catch (_) {
+      return false;
+    }
   }
 
   _ReservationEntry _buildReservationEntryForSend({
@@ -6490,100 +6439,6 @@ class _DanisanProfilState extends State<DanisanProfil> {
       startMinutes: selection.startMinutes,
       endMinutes: selection.endMinutes,
     );
-  }
-
-  Future<bool> _sendReservationInfoViaSystem({
-    required _ReservationSelection selection,
-    required List<_ReservationOperationData> operations,
-    required bool isReminder,
-  }) async {
-    final data = _danisanData;
-    if (data == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Danışan bilgisi bulunamadı.')),
-      );
-      return false;
-    }
-    final phone = _resolvePhone(Map<String, dynamic>.from(data));
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Telefon bilgisi bulunamadı.')),
-      );
-      return false;
-    }
-    final name = _resolveStudentName(Map<String, dynamic>.from(data));
-    final entry = _buildReservationEntryForSend(
-      selection: selection,
-      operations: operations,
-    );
-    final message = _composeReservationMessage(
-      name: name,
-      entry: entry,
-      isReminder: isReminder,
-    );
-    final kurumId = (kurum.data['kurumkodu'] ?? '').toString().trim();
-
-    try {
-      debugPrint(
-        '[WhatsAppApi] sending reservation message phone=$phone kurumId=$kurumId',
-      );
-      final api = WhatsAppApi();
-      await api.sendMessage(
-        recipient: phone,
-        message: message,
-        kurumId: kurumId.isNotEmpty ? kurumId : null,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('WhatsApp mesajı gönderildi.')),
-        );
-      }
-      return true;
-    } catch (error) {
-      debugPrint('[WhatsAppApi] send failed error=$error');
-      if (error is WhatsAppApiException && error.statusCode == 504) {
-        if (mounted) {
-          await _showWhatsAppPairingDialog(initialPhone: phone);
-        }
-        return false;
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('WhatsApp mesajı gönderilemedi: $error')),
-        );
-      }
-      return false;
-    }
-  }
-
-  void _sendReservationWhatsApp(
-    _ReservationEntry entry, {
-    required bool isReminder,
-  }) {
-    final data = _danisanData;
-    if (data == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Danışan bilgisi bulunamadı.')),
-      );
-      return;
-    }
-    final phone = _resolvePhone(Map<String, dynamic>.from(data));
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Telefon bilgisi bulunamadı.')),
-      );
-      return;
-    }
-    final name = _resolveStudentName(Map<String, dynamic>.from(data));
-    final message = _composeReservationMessage(
-      name: name,
-      entry: entry,
-      isReminder: isReminder,
-    );
-
-    final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
-    final encoded = Uri.encodeComponent(message);
-    _launchExternalUrl('https://wa.me/$digits?text=$encoded');
   }
 
   DateTime _buildDateTimeFromMinutes(DateTime day, int startMinutes) {
@@ -6666,16 +6521,20 @@ class _DanisanProfilState extends State<DanisanProfil> {
   }
 
   double _parsePrice(String value) {
+    return _tryParsePrice(value, emptyAsZero: true) ?? 0;
+  }
+
+  double? _tryParsePrice(String value, {bool emptyAsZero = false}) {
     var normalized = value.trim().replaceAll(' ', '');
     if (normalized.isEmpty) {
-      return 0;
+      return emptyAsZero ? 0 : null;
     }
     if (normalized.contains(',')) {
       normalized = normalized.replaceAll('.', '').replaceAll(',', '.');
     } else if (RegExp(r'^\d{1,3}(\.\d{3})+$').hasMatch(normalized)) {
       normalized = normalized.replaceAll('.', '');
     }
-    return double.tryParse(normalized) ?? 0;
+    return double.tryParse(normalized);
   }
 
   double _parsePriceValue(dynamic value) {

@@ -1,5 +1,17 @@
 {
   "projects": {
     "default": "kurumtakipapp"
+  },
+  "targets": {
+    "kurumtakipapp": {
+      "hosting": {
+        "admin": [
+          "kurumtakip-admin"
+        ],
+        "booking": [
+          "randevu-mebs"
+        ]
+      }
+    }
   }
 }

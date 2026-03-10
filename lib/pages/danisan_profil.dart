@@ -36,10 +36,33 @@ class _ResolvedStorageImage {
   final Uint8List? bytes;
 }
 
+class ReservationPrefill {
+  const ReservationPrefill({
+    required this.day,
+    required this.locationName,
+    required this.startMinutes,
+    required this.endMinutes,
+    this.locationId,
+  });
+
+  final DateTime day;
+  final String locationName;
+  final int startMinutes;
+  final int endMinutes;
+  final String? locationId;
+}
+
 class DanisanProfil extends StatefulWidget {
-  const DanisanProfil({super.key, required this.id});
+  const DanisanProfil({
+    super.key,
+    required this.id,
+    this.initialReservationPrefill,
+    this.openReservationFormOnStart = false,
+  });
 
   final String id;
+  final ReservationPrefill? initialReservationPrefill;
+  final bool openReservationFormOnStart;
 
   @override
   State<DanisanProfil> createState() => _DanisanProfilState();
@@ -116,6 +139,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
   bool _isDeletingStudent = false;
   bool _showPastReservations = false;
   bool _showPastPackages = false;
+  bool _initialReservationFormHandled = false;
   final Set<String> _packageStatusUpdates = {};
   late Future<DocumentSnapshot<Map<String, dynamic>>> _profileFuture;
 
@@ -217,6 +241,91 @@ class _DanisanProfilState extends State<DanisanProfil> {
   void initState() {
     super.initState();
     _profileFuture = _danisanDoc.get();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _openInitialReservationFormIfNeeded();
+    });
+  }
+
+  Future<void> _openInitialReservationFormIfNeeded() async {
+    if (_initialReservationFormHandled ||
+        !widget.openReservationFormOnStart ||
+        widget.initialReservationPrefill == null) {
+      return;
+    }
+    _initialReservationFormHandled = true;
+    if (!_canCreateReservation) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Bu işlem için yetkiniz yok.')),
+        );
+      }
+      return;
+    }
+
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString().trim();
+    if (kurumkodu.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+        );
+      }
+      return;
+    }
+
+    final snapshot = await _danisanDoc.get();
+    if (!mounted) {
+      return;
+    }
+    final studentData = snapshot.data();
+    if (studentData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Danışan bilgisi bulunamadı.')),
+      );
+      return;
+    }
+
+    final locations = await _fetchMekanOptions(kurumkodu);
+    if (!mounted) {
+      return;
+    }
+    if (locations.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Rezervasyon için mekan bulunamadı.')),
+      );
+      return;
+    }
+
+    final prefill = widget.initialReservationPrefill!;
+    _MekanOption? selectedLocation;
+    final prefillLocationId = (prefill.locationId ?? '').trim();
+    if (prefillLocationId.isNotEmpty) {
+      for (final location in locations) {
+        if (location.id == prefillLocationId) {
+          selectedLocation = location;
+          break;
+        }
+      }
+    }
+    selectedLocation ??= locations.firstWhere(
+      (location) => location.name.trim() == prefill.locationName.trim(),
+      orElse: () => locations.first,
+    );
+    final resolvedLocation = selectedLocation;
+    if (resolvedLocation == null) {
+      return;
+    }
+
+    final day = DateUtils.dateOnly(prefill.day);
+    final endMinutes = prefill.endMinutes > prefill.startMinutes
+        ? prefill.endMinutes
+        : prefill.startMinutes + _slotDurationMinutes;
+    final selection = _ReservationSelection(
+      day: day,
+      location: resolvedLocation,
+      startMinutes: prefill.startMinutes,
+      endMinutes: endMinutes,
+    );
+    await _showReservationForm(selection, studentData);
   }
 
   Widget _buildAppBarMenu() {

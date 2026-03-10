@@ -53,6 +53,8 @@ class AppUpdateService {
 
   static const String _configCollection = 'app_config';
   static const String _versionsDoc = 'versions';
+  static const String _iosStoreUrl =
+      'https://apps.apple.com/tr/app/mebs-kurum-takip-app/id6759349443';
 
   Future<AppUpdateStatus?> checkForUpdate() async {
     try {
@@ -210,6 +212,10 @@ class AppUpdateService {
 
     if (Platform.isAndroid) {
       return 'https://play.google.com/store/apps/details?id=${status.packageName}';
+    }
+
+    if (Platform.isIOS) {
+      return _iosStoreUrl;
     }
 
     return null;

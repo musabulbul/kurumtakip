@@ -57,6 +57,8 @@ class _KurumlarPageState extends State<KurumlarPage> {
           'kisaad': data['kisaad'] ?? '',
           'kurumadi': data['kurumadi'] ?? '',
           'kurumkodu': data['kurumkodu'] ?? doc.id,
+          'slug': data['slug'] ?? '',
+          'bookingEnabled': data['bookingEnabled'] == true,
           'kurumturu': data['kurumturu'] ?? '',
           'baslangicTarihi': data['baslangicTarihi'] ?? '',
           'bitisTarihi': data['bitisTarihi'] ?? '',
@@ -126,12 +128,63 @@ class _KurumlarPageState extends State<KurumlarPage> {
         final values = [
           institution['kurumadi'] ?? '',
           institution['kurumkodu'] ?? '',
+          institution['slug'] ?? '',
           institution['kisaad'] ?? '',
           institution['kurumturu'] ?? '',
         ].join(' ').toUpperCase();
         return values.contains(cleanQuery);
       }).toList();
     });
+  }
+
+  String _slugify(String raw) {
+    var value = raw.toLowerCase().trim();
+    const trMap = {
+      'ç': 'c',
+      'ğ': 'g',
+      'ı': 'i',
+      'ö': 'o',
+      'ş': 's',
+      'ü': 'u',
+    };
+    trMap.forEach((key, val) {
+      value = value.replaceAll(key, val);
+    });
+    value = value.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+    value = value.replaceAll(RegExp(r'-{2,}'), '-');
+    value = value.replaceAll(RegExp(r'^-+|-+$'), '');
+    return value;
+  }
+
+  Future<String> _ensureUniqueSlug(
+    String baseSlug, {
+    required String currentDocId,
+  }) async {
+    var candidate = _slugify(baseSlug);
+    if (candidate.isEmpty) {
+      throw Exception('Slug boş olamaz.');
+    }
+
+    var suffix = 1;
+    while (true) {
+      final query = await _firestore
+          .collection('kurumlar')
+          .where('slug', isEqualTo: candidate)
+          .limit(1)
+          .get();
+
+      if (query.docs.isEmpty) {
+        return candidate;
+      }
+
+      final doc = query.docs.first;
+      if (doc.id == currentDocId) {
+        return candidate;
+      }
+
+      suffix += 1;
+      candidate = '${_slugify(baseSlug)}-$suffix';
+    }
   }
 
   Future<void> _openInstitutionDialog({Map<String, dynamic>? institution}) async {
@@ -146,6 +199,8 @@ class _KurumlarPageState extends State<KurumlarPage> {
         TextEditingController(text: institution?['kurumadi'] ?? '');
     final TextEditingController kurumkoduController =
         TextEditingController(text: institution?['kurumkodu'] ?? '');
+    final TextEditingController slugController =
+        TextEditingController(text: institution?['slug'] ?? '');
     final TextEditingController kurumTuruController =
         TextEditingController(text: institution?['kurumturu'] ?? '');
     final TextEditingController baslangicController =
@@ -170,6 +225,12 @@ class _KurumlarPageState extends State<KurumlarPage> {
         TextEditingController(text: institution?['smsApiBaslik'] ?? '');
 
     String selectedProviderId = smsProviderIdController.text.trim();
+    var bookingEnabled = institution?['bookingEnabled'] == true;
+    var slugManuallyEdited = slugController.text.trim().isNotEmpty;
+    kurumAdiController.addListener(() {
+      if (slugManuallyEdited) return;
+      slugController.text = _slugify(kurumAdiController.text);
+    });
 
     await showDialog(
       context: context,
@@ -211,8 +272,47 @@ class _KurumlarPageState extends State<KurumlarPage> {
                     },
                   ),
                   _buildTextField(
+                    label: 'Slug',
+                    controller: slugController,
+                    hintText: 'orn: hurma-juwena',
+                    validator: (value) {
+                      final normalized = _slugify(value ?? '');
+                      if (normalized.isEmpty) {
+                        return 'Slug zorunludur';
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      slugManuallyEdited = value.trim().isNotEmpty;
+                    },
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () {
+                        final generated = _slugify(kurumAdiController.text);
+                        setLocalState(() {
+                          slugController.text = generated;
+                          slugManuallyEdited = true;
+                        });
+                      },
+                      icon: const Icon(Icons.auto_fix_high),
+                      label: const Text('Kurum adından slug üret'),
+                    ),
+                  ),
+                  _buildTextField(
                     label: 'Kurum Türü',
                     controller: kurumTuruController,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Online Booking Aktif'),
+                    value: bookingEnabled,
+                    onChanged: (value) {
+                      setLocalState(() {
+                        bookingEnabled = value;
+                      });
+                    },
                   ),
                   _buildTextField(
                     label: 'Başlangıç Tarihi',
@@ -336,6 +436,8 @@ class _KurumlarPageState extends State<KurumlarPage> {
                       'kisaad': kisaAdController.text.trim(),
                       'kurumadi': kurumAdiController.text.trim(),
                       'kurumkodu': kurumkoduController.text.trim(),
+                      'slug': slugController.text.trim(),
+                      'bookingEnabled': bookingEnabled,
                       'kurumturu': kurumTuruController.text.trim(),
                       'baslangicTarihi': baslangicController.text.trim(),
                       'bitisTarihi': bitisController.text.trim(),
@@ -398,11 +500,49 @@ class _KurumlarPageState extends State<KurumlarPage> {
   }) async {
     final String kurumkodu = data['kurumkodu'] as String;
     final String targetDocId = isEdit ? (docId ?? kurumkodu) : kurumkodu;
+    final normalizedBaseSlug = _slugify(
+      (data['slug'] ?? '').toString().trim().isNotEmpty
+          ? (data['slug'] as String)
+          : (data['kurumadi'] as String),
+    );
+    final uniqueSlug = await _ensureUniqueSlug(
+      normalizedBaseSlug,
+      currentDocId: targetDocId,
+    );
 
-    await _firestore.collection('kurumlar').doc(targetDocId).set(
-          data,
-          SetOptions(merge: true),
-        );
+    final existingDoc =
+        await _firestore.collection('kurumlar').doc(targetDocId).get();
+    final previousSlug = _slugify((existingDoc.data()?['slug'] ?? '').toString());
+
+    final payload = Map<String, dynamic>.from(data)
+      ..['slug'] = uniqueSlug
+      ..['updatedAt'] = FieldValue.serverTimestamp();
+
+    final batch = _firestore.batch();
+    final kurumRef = _firestore.collection('kurumlar').doc(targetDocId);
+    batch.set(kurumRef, payload, SetOptions(merge: true));
+
+    final slugRef = _firestore.collection('orgSlugs').doc(uniqueSlug);
+    batch.set(slugRef, {
+      'orgId': targetDocId,
+      'active': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'createdAt': existingDoc.exists
+          ? (existingDoc.data()?['createdAt'] ?? FieldValue.serverTimestamp())
+          : FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    if (previousSlug.isNotEmpty && previousSlug != uniqueSlug) {
+      final oldSlugRef = _firestore.collection('orgSlugs').doc(previousSlug);
+      batch.set(oldSlugRef, {
+        'orgId': targetDocId,
+        'active': false,
+        'replacedBy': uniqueSlug,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
+
+    await batch.commit();
   }
 
   Future<void> _deleteInstitution(Map<String, dynamic> institution) async {
@@ -436,10 +576,22 @@ class _KurumlarPageState extends State<KurumlarPage> {
     }
 
     try {
-      await _firestore
-          .collection('kurumlar')
-          .doc(institution['docId'] as String)
-          .delete();
+      final docId = institution['docId'] as String;
+      final slug = _slugify((institution['slug'] ?? '').toString());
+      final batch = _firestore.batch();
+      batch.delete(_firestore.collection('kurumlar').doc(docId));
+      if (slug.isNotEmpty) {
+        batch.set(
+          _firestore.collection('orgSlugs').doc(slug),
+          {
+            'orgId': docId,
+            'active': false,
+            'deletedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
+      await batch.commit();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Kurum silindi.')),
@@ -460,6 +612,7 @@ class _KurumlarPageState extends State<KurumlarPage> {
     required TextEditingController controller,
     String? hintText,
     String? Function(String?)? validator,
+    void Function(String)? onChanged,
     bool readOnly = false,
     TextInputType keyboardType = TextInputType.text,
     int maxLines = 1,
@@ -473,6 +626,7 @@ class _KurumlarPageState extends State<KurumlarPage> {
         keyboardType: keyboardType,
         maxLines: maxLines,
         validator: validator,
+        onChanged: onChanged,
         obscureText: obscureText,
         decoration: InputDecoration(
           labelText: label,
@@ -565,6 +719,13 @@ class _KurumlarPageState extends State<KurumlarPage> {
                                       children: [
                                         Text('Kurum Kodu: '
                                             '${institution['kurumkodu'] ?? ''}'),
+                                        if ((institution['slug'] ?? '')
+                                            .toString()
+                                            .isNotEmpty)
+                                          Text('Slug: ${institution['slug']}'),
+                                        Text(
+                                          'Online Booking: ${institution['bookingEnabled'] == true ? 'Açık' : 'Kapalı'}',
+                                        ),
                                         if ((institution['kisaad'] ?? '').isNotEmpty)
                                           Text('Kısa Ad: '
                                               '${institution['kisaad']}'),

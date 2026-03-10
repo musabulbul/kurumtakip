@@ -7,6 +7,7 @@ import '../../utils/permission_utils.dart';
 import 'islemler_page.dart';
 import 'mekanlar_page.dart';
 import 'mesajlar_page.dart';
+import 'online_booking_settings_page.dart';
 import 'paketler_page.dart';
 import 'saatler_page.dart';
 
@@ -99,6 +100,16 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
                 const SizedBox(height: 12),
                 Card(
                   child: ListTile(
+                    leading: const Icon(Icons.event_available_outlined),
+                    title: const Text('Online Randevu'),
+                    subtitle: const Text('Giriş yöntemi, fiyat ve ekstre görünürlüğü'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openOnlineBookingSettingsPage,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
                     leading: const Icon(Icons.inventory_2_outlined),
                     title: const Text('Paketler'),
                     subtitle: const Text('Paket tanımları ve içerikleri'),
@@ -153,6 +164,15 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
     }
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const MesajlarPage()),
+    );
+  }
+
+  void _openOnlineBookingSettingsPage() {
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const OnlineBookingSettingsPage()),
     );
   }
 }

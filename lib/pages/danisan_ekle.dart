@@ -9,7 +9,12 @@ import '../utils/phone_utils.dart';
 import '../utils/text_utils.dart';
 
 class DanisanEklePage extends StatefulWidget {
-  const DanisanEklePage({super.key});
+  const DanisanEklePage({
+    super.key,
+    this.initialFullName,
+  });
+
+  final String? initialFullName;
 
   @override
   State<DanisanEklePage> createState() => _DanisanEklePageState();
@@ -27,6 +32,18 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
   String? _selectedGender;
   DateTime? _selectedBirthDate;
   bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialName = widget.initialFullName?.trim() ?? '';
+    if (initialName.isNotEmpty) {
+      _adSoyadController.text = initialName;
+      _adSoyadController.selection = TextSelection.collapsed(
+        offset: initialName.length,
+      );
+    }
+  }
 
   @override
   void dispose() {

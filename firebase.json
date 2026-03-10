@@ -38,21 +38,43 @@
       }
     }
   },
-  "hosting": {
-    "source": ".",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "frameworksBackend": {
-      "region": "us-central1"
+  "hosting": [
+    {
+      "target": "admin",
+      "public": "build/web_admin",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
+    },
+    {
+      "target": "booking",
+      "public": "build/web_booking",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
     }
-  },
+  ],
   "storage": {
     "rules": "storage.rules"
   },
   "firestore": {
+    "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   }
 }

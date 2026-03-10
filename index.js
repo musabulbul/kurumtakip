@@ -32,6 +32,10 @@ const FIRESTORE_COLLECTION = process.env.FIRESTORE_COLLECTION || 'kurumlar';
 const SMS_PROVIDER_COLLECTION = process.env.SMS_PROVIDER_COLLECTION || 'sms_providers';
 const SMS_PROVIDER_FIELD = process.env.SMS_PROVIDER_FIELD || 'smsProviderId';
 const DEFAULT_TIME_ZONE = process.env.DEFAULT_TIME_ZONE || 'Europe/Istanbul';
+const BOOKING_ORGS_COLLECTION = process.env.BOOKING_ORGS_COLLECTION || 'orgs';
+const BOOKING_SERVICES_SUBCOLLECTION = process.env.BOOKING_SERVICES_SUBCOLLECTION || 'services';
+const BOOKINGS_COLLECTION = process.env.BOOKINGS_COLLECTION || 'bookings';
+const BOOKING_LOCKS_COLLECTION = process.env.BOOKING_LOCKS_COLLECTION || 'bookingLocks';
 
 function asMap(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -397,16 +401,36 @@ function composeBirthdayMessage({ student, settings }) {
 function parseBirthDate(value, timeZone = DEFAULT_TIME_ZONE) {
   if (!value) return null;
   if (typeof value === 'string') {
-    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (match) return { month: Number(match[2]), day: Number(match[3]) };
-    const trMatch = value.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-    if (trMatch) return { month: Number(trMatch[2]), day: Number(trMatch[1]) };
+    const raw = value.trim();
+    const ymd = raw.match(/^(\d{4})[-./](\d{2})[-./](\d{2})$/);
+    if (ymd) return { month: Number(ymd[2]), day: Number(ymd[3]) };
+    const dmy = raw.match(/^(\d{2})[-./](\d{2})[-./](\d{4})$/);
+    if (dmy) return { month: Number(dmy[2]), day: Number(dmy[1]) };
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      const parts = getDatePartsInTimeZone(parsed, timeZone);
+      return { month: parts.month, day: parts.day };
+    }
     return null;
   }
   if (value?.toDate) {
     const d = value.toDate();
     const parts = getDatePartsInTimeZone(d, timeZone);
     return { month: parts.month, day: parts.day };
+  }
+  if (typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      const parts = getDatePartsInTimeZone(parsed, timeZone);
+      return { month: parts.month, day: parts.day };
+    }
+  }
+  if (typeof value === 'object' && value && Number.isFinite(value._seconds)) {
+    const parsed = new Date(Number(value._seconds) * 1000);
+    if (!Number.isNaN(parsed.getTime())) {
+      const parts = getDatePartsInTimeZone(parsed, timeZone);
+      return { month: parts.month, day: parts.day };
+    }
   }
   return null;
 }
@@ -749,43 +773,58 @@ app.post('/jobs/birthdays/send', async (req, res) => {
     for (const kurumDoc of kurumDocs) {
       const kurumData = kurumDoc.data() || {};
       const providerId = String(kurumData[SMS_PROVIDER_FIELD] || kurumData.smsProviderId || '').trim();
-      if (!providerId) continue;
       const timeZone = resolveTimeZone(kurumData);
       const today = getDatePartsInTimeZone(now, timeZone);
+      const result = { kurumId: kurumDoc.id, sent: 0, skipped: 0, total: 0 };
+      const skipReasons = {};
+
+      if (!providerId) {
+        skipReasons.smsProvider = 1;
+        results.push({ ...result, reason: 'sms_provider_missing', skipReasons });
+        continue;
+      }
 
       const settings = asMap(asMap(kurumData.settings).messageSettings);
       const birthday = asMap(settings.birthday);
-      if (birthday.enabled !== true) continue;
+      if (birthday.enabled !== true) {
+        skipReasons.birthdayDisabled = 1;
+        results.push({ ...result, reason: 'birthday_disabled', skipReasons });
+        continue;
+      }
 
       const sendTimeMinutes = Number(birthday.sendTimeMinutes ?? 9 * 60);
       const nowMinutes = minutesOfDayInTimeZone(now, timeZone);
       if (Math.abs(nowMinutes - sendTimeMinutes) > 15) {
+        skipReasons.outOfWindow = 1;
+        results.push({ ...result, reason: 'out_of_send_window', skipReasons });
         continue;
       }
 
       const provider = await getSmsProviderData(providerId);
       const credentials = buildCredentials(kurumData);
       const studentsSnap = await kurumDoc.ref.collection('danisanlar').get();
-      let sent = 0;
-      let skipped = 0;
+      result.total = studentsSnap.size;
 
       for (const studentDoc of studentsSnap.docs) {
         const student = studentDoc.data() || {};
         const birth = parseBirthDate(student.dogumtarihi, timeZone);
         if (!birth || birth.month !== today.month || birth.day !== today.day) {
-          skipped += 1;
+          result.skipped += 1;
+          skipReasons.notBirthday = (skipReasons.notBirthday || 0) + 1;
           continue;
         }
 
         const sentKey = dateKeyInTimeZone(now, timeZone);
         if (String(student.birthdaySmsLastSentDate || '') === sentKey) {
-          skipped += 1;
+          result.skipped += 1;
+          skipReasons.alreadySentToday = (skipReasons.alreadySentToday || 0) + 1;
           continue;
         }
 
         const phone = normalizePhone(student.telefon || student.ogrencitel || '');
         if (!phone) {
-          skipped += 1;
+          result.skipped += 1;
+          skipReasons.phoneMissing = (skipReasons.phoneMissing || 0) + 1;
           continue;
         }
 
@@ -805,7 +844,7 @@ app.post('/jobs/birthdays/send', async (req, res) => {
         });
 
         if (sendResponse.response.ok && !extractProviderError(sendResponse.decoded)) {
-          sent += 1;
+          result.sent += 1;
           await studentDoc.ref.set(
             {
               birthdaySmsLastSentDate: sentKey,
@@ -813,10 +852,13 @@ app.post('/jobs/birthdays/send', async (req, res) => {
             },
             { merge: true }
           );
+        } else {
+          result.skipped += 1;
+          skipReasons.providerError = (skipReasons.providerError || 0) + 1;
         }
       }
 
-      results.push({ kurumId: kurumDoc.id, sent, skipped, total: studentsSnap.size });
+      results.push({ ...result, skipReasons });
     }
 
     return res.status(200).json({
@@ -828,6 +870,314 @@ app.post('/jobs/birthdays/send', async (req, res) => {
   } catch (err) {
     logger.error({ err, requestId }, '[jobs] birthdays error');
     return res.status(500).json({ ok: false, error: 'birthdays_job_failed', detail: err.message });
+  }
+});
+
+function parseIsoDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function toDateKey(date) {
+  const year = date.getFullYear().toString().padStart(4, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseTimeOfDay(value) {
+  const parts = String(value || '').split(':');
+  if (parts.length !== 2) return null;
+  const hour = Number(parts[0]);
+  const minute = Number(parts[1]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+function withDayAndTime(day, hour, minute) {
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute, 0, 0);
+}
+
+function overlaps(leftStart, leftEnd, rightStart, rightEnd) {
+  return leftStart < rightEnd && leftEnd > rightStart;
+}
+
+function buildLockIds({ orgId, staffId, startTime, endTime, stepMinutes }) {
+  const safeStep = Number.isFinite(stepMinutes) && stepMinutes > 0 ? stepMinutes : 15;
+  const lockIds = [];
+  for (let cursor = new Date(startTime); cursor < endTime; ) {
+    const staffPart = String(staffId || 'global').trim() || 'global';
+    lockIds.push(`${orgId}_${staffPart}_${cursor.toISOString()}`);
+    cursor = new Date(cursor.getTime() + safeStep * 60000);
+  }
+  return lockIds;
+}
+
+app.post('/booking/availability', async (req, res) => {
+  const body = req.body || {};
+  const orgId = String(body.orgId || '').trim();
+  const serviceId = String(body.serviceId || '').trim();
+  const date = parseIsoDate(body.date);
+  const staffId = String(body.staffId || '').trim() || null;
+
+  if (!orgId || !serviceId || !date) {
+    return res.status(400).json({ ok: false, error: 'invalid_request' });
+  }
+
+  try {
+    const db = getFirestore();
+    const orgRef = db.collection(BOOKING_ORGS_COLLECTION).doc(orgId);
+    const orgSnap = await orgRef.get();
+    if (!orgSnap.exists) {
+      return res.status(404).json({ ok: false, error: 'org_not_found' });
+    }
+
+    const org = orgSnap.data() || {};
+    const bookingEnabled = org.bookingEnabled === true;
+    const settings = asMap(org.bookingSettings);
+    if (!bookingEnabled || settings.enabled === false) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const serviceRef = orgRef.collection(BOOKING_SERVICES_SUBCOLLECTION).doc(serviceId);
+    const serviceSnap = await serviceRef.get();
+    if (!serviceSnap.exists) {
+      return res.status(404).json({ ok: false, error: 'service_not_found' });
+    }
+    const service = serviceSnap.data() || {};
+    if (service.active === false) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const durationMinutes = Number(service.durationMinutes || 30);
+    const slotMinutes = Number(settings.slotMinutes || 15);
+    const minHoursBefore = Number(settings.minHoursBefore || 2);
+    const allowSameDay = settings.allowSameDay !== false;
+    const workingHours = asMap(org.workingHours);
+    const closedDates = (workingHours.closedDates || []).map((value) => String(value));
+    const dayKey = toDateKey(date);
+
+    if (closedDates.includes(dayKey)) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const weekday = date.getDay() === 0 ? 7 : date.getDay();
+    const dayConfig = asMap(workingHours[String(weekday)]);
+    if (dayConfig.isOpen === false) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const windows = Array.isArray(dayConfig.windows) ? dayConfig.windows : [];
+    if (windows.length === 0) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const now = new Date();
+    const minAllowed = new Date(now.getTime() + minHoursBefore * 3600000);
+    if (!allowSameDay && toDateKey(now) === dayKey) {
+      return res.status(200).json({ ok: true, slots: [] });
+    }
+
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+
+    const bookingsSnap = await db
+      .collection(BOOKINGS_COLLECTION)
+      .where('orgId', '==', orgId)
+      .where('bookingDate', '>=', dayStart)
+      .where('bookingDate', '<', dayEnd)
+      .where('status', 'in', ['pending', 'confirmed'])
+      .get();
+
+    const existing = bookingsSnap.docs
+      .map((doc) => doc.data() || {})
+      .filter((item) => !staffId || String(item.staffId || '') === staffId)
+      .map((item) => ({
+        startTime: new Date(item.startTime.toDate()),
+        endTime: new Date(item.endTime.toDate())
+      }));
+
+    const slots = [];
+    for (const rawWindow of windows) {
+      const window = asMap(rawWindow);
+      const startParts = parseTimeOfDay(window.start);
+      const endParts = parseTimeOfDay(window.end);
+      if (!startParts || !endParts) continue;
+
+      const windowStart = withDayAndTime(date, startParts.hour, startParts.minute);
+      const windowEnd = withDayAndTime(date, endParts.hour, endParts.minute);
+      if (!(windowEnd > windowStart)) continue;
+
+      for (let cursor = new Date(windowStart); ; ) {
+        const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
+        if (slotEnd > windowEnd) break;
+        const busy = existing.some((entry) =>
+          overlaps(cursor, slotEnd, entry.startTime, entry.endTime)
+        );
+        if (!busy && cursor >= minAllowed) {
+          slots.push({
+            start: cursor.toISOString(),
+            end: slotEnd.toISOString()
+          });
+        }
+        cursor = new Date(cursor.getTime() + slotMinutes * 60000);
+      }
+    }
+
+    return res.status(200).json({ ok: true, slots });
+  } catch (err) {
+    logger.error({ err }, '[booking] availability error');
+    return res.status(500).json({ ok: false, error: 'availability_failed' });
+  }
+});
+
+app.post('/booking/create', async (req, res) => {
+  const body = req.body || {};
+  const orgId = String(body.orgId || '').trim();
+  const customerId = String(body.customerId || '').trim();
+  const customerName = String(body.customerName || '').trim();
+  const customerPhone = normalizePhone(body.customerPhone || '');
+  const serviceId = String(body.serviceId || '').trim();
+  const serviceName = String(body.serviceName || '').trim();
+  const source = String(body.source || 'online').trim() || 'online';
+  const notes = String(body.notes || '').trim();
+  const staffId = String(body.staffId || '').trim();
+  const staffName = String(body.staffName || '').trim();
+
+  const bookingDate = parseIsoDate(body.bookingDate);
+  const startTime = parseIsoDate(body.startTime);
+  const endTime = parseIsoDate(body.endTime);
+
+  if (
+    !orgId ||
+    !customerId ||
+    !customerName ||
+    !customerPhone ||
+    !serviceId ||
+    !serviceName ||
+    !bookingDate ||
+    !startTime ||
+    !endTime
+  ) {
+    return res.status(400).json({ ok: false, error: 'invalid_request' });
+  }
+  if (!(endTime > startTime)) {
+    return res.status(400).json({ ok: false, error: 'invalid_time_range' });
+  }
+
+  try {
+    const db = getFirestore();
+    const orgRef = db.collection(BOOKING_ORGS_COLLECTION).doc(orgId);
+    const orgSnap = await orgRef.get();
+    if (!orgSnap.exists) {
+      return res.status(404).json({ ok: false, error: 'org_not_found' });
+    }
+
+    const org = orgSnap.data() || {};
+    const bookingEnabled = org.bookingEnabled === true;
+    const settings = asMap(org.bookingSettings);
+    if (!bookingEnabled || settings.enabled === false) {
+      return res.status(403).json({ ok: false, error: 'booking_closed' });
+    }
+
+    const minHoursBefore = Number(settings.minHoursBefore || 2);
+    const minAllowed = new Date(Date.now() + minHoursBefore * 3600000);
+    if (startTime < minAllowed) {
+      return res.status(422).json({ ok: false, error: 'too_close_to_now' });
+    }
+
+    const maxDaysAhead = Number(settings.maxDaysAhead || 30);
+    const maxAllowed = new Date();
+    maxAllowed.setDate(maxAllowed.getDate() + maxDaysAhead);
+    if (startTime > maxAllowed) {
+      return res.status(422).json({ ok: false, error: 'too_far_in_future' });
+    }
+
+    const stepMinutes = Number(settings.slotMinutes || 15);
+    const lockIds = buildLockIds({ orgId, staffId, startTime, endTime, stepMinutes });
+
+    const bookingRef = db.collection(BOOKINGS_COLLECTION).doc();
+    await db.runTransaction(async (tx) => {
+      const dayStart = new Date(
+        bookingDate.getFullYear(),
+        bookingDate.getMonth(),
+        bookingDate.getDate(),
+        0,
+        0,
+        0,
+        0
+      );
+      const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+
+      const overlapQuery = db
+        .collection(BOOKINGS_COLLECTION)
+        .where('orgId', '==', orgId)
+        .where('bookingDate', '>=', dayStart)
+        .where('bookingDate', '<', dayEnd)
+        .where('status', 'in', ['pending', 'confirmed']);
+
+      const overlapSnap = await tx.get(overlapQuery);
+      const overlapping = overlapSnap.docs.some((doc) => {
+        const item = doc.data() || {};
+        if (staffId && String(item.staffId || '') !== staffId) return false;
+        const left = new Date(item.startTime.toDate());
+        const right = new Date(item.endTime.toDate());
+        return overlaps(startTime, endTime, left, right);
+      });
+      if (overlapping) {
+        const err = new Error('slot_unavailable');
+        err.code = 'slot_unavailable';
+        throw err;
+      }
+
+      for (const lockId of lockIds) {
+        const lockRef = db.collection(BOOKING_LOCKS_COLLECTION).doc(lockId);
+        const lockSnap = await tx.get(lockRef);
+        if (lockSnap.exists) {
+          const err = new Error('slot_locked');
+          err.code = 'slot_locked';
+          throw err;
+        }
+        tx.set(lockRef, {
+          orgId,
+          staffId: staffId || null,
+          lockStart: startTime,
+          lockEnd: endTime,
+          bookingId: bookingRef.id,
+          createdAt: new Date(),
+          expiresAt: new Date(startTime.getTime() + 2 * 3600000)
+        });
+      }
+
+      tx.set(bookingRef, {
+        orgId,
+        customerId,
+        customerName,
+        customerPhone,
+        serviceId,
+        serviceName,
+        bookingDate,
+        startTime,
+        endTime,
+        status: 'pending',
+        source,
+        notes: notes || null,
+        staffId: staffId || null,
+        staffName: staffName || null,
+        createdAt: new Date()
+      });
+    });
+
+    return res.status(200).json({ ok: true, bookingId: bookingRef.id });
+  } catch (err) {
+    logger.error({ err }, '[booking] create error');
+    if (err.code === 'slot_unavailable' || err.code === 'slot_locked') {
+      return res.status(409).json({ ok: false, error: 'slot_not_available' });
+    }
+    return res.status(500).json({ ok: false, error: 'booking_create_failed' });
   }
 });
 

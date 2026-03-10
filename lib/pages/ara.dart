@@ -61,6 +61,8 @@ class _SearchPageState extends State<SearchPage> {
     'Mekan5',
   ];
   List<String> _locations = [];
+  String? _selectedLocationForCreate;
+  final Set<int> _selectedStartMinutesForCreate = <int>{};
 
   final EdgeInsets _pagePadding = const EdgeInsets.symmetric(horizontal: 16);
 
@@ -454,29 +456,37 @@ class _SearchPageState extends State<SearchPage> {
     return result ?? false;
   }
 
-  Future<void> _openDanisanEklePage() async {
+  Future<String?> _openDanisanEklePage({
+    String? initialFullName,
+    bool openProfileAfterCreate = true,
+  }) async {
     if (!mounted) {
-      return;
+      return null;
     }
     FocusScope.of(context).unfocus();
     final result = await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const DanisanEklePage()),
-    );
-    if (!mounted || result == null || result is! String || result.trim().isEmpty) {
-      return;
-    }
-    final newStudentId = result.trim();
-    await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => DanisanProfil(id: newStudentId),
+        builder: (_) => DanisanEklePage(initialFullName: initialFullName),
       ),
     );
-    if (!mounted) {
-      return;
+    if (!mounted || result == null || result is! String || result.trim().isEmpty) {
+      return null;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Danışan kaydedildi.')),
-    );
+    final newStudentId = result.trim();
+    if (openProfileAfterCreate) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DanisanProfil(id: newStudentId),
+        ),
+      );
+      if (!mounted) {
+        return newStudentId;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Danışan kaydedildi.')),
+      );
+    }
+    return newStudentId;
   }
 
   void _showInstitutionMissingSnackBar() {
@@ -508,6 +518,189 @@ class _SearchPageState extends State<SearchPage> {
   void _updateSelectedDay(DateTime day) {
     setState(() {
       _selectedDay = DateUtils.dateOnly(day);
+      _selectedLocationForCreate = null;
+      _selectedStartMinutesForCreate.clear();
+    });
+  }
+
+  void _toggleCreateSlot(String location, int startMinutes) {
+    setState(() {
+      if (_selectedLocationForCreate != location) {
+        _selectedLocationForCreate = location;
+        _selectedStartMinutesForCreate
+          ..clear()
+          ..add(startMinutes);
+        return;
+      }
+      if (_selectedStartMinutesForCreate.contains(startMinutes)) {
+        _selectedStartMinutesForCreate.remove(startMinutes);
+        if (_selectedStartMinutesForCreate.isEmpty) {
+          _selectedLocationForCreate = null;
+        }
+        return;
+      }
+      _selectedStartMinutesForCreate.add(startMinutes);
+    });
+  }
+
+  ReservationPrefill? _buildReservationPrefillFromSelection() {
+    final selectedLocation = _selectedLocationForCreate;
+    if (selectedLocation == null || _selectedStartMinutesForCreate.isEmpty) {
+      return null;
+    }
+    final sessionHours = _asMap(_asMap(kurum.data['settings'])['sessionHours']);
+    final sessionConfig = _resolveSessionHours(sessionHours, _selectedDay);
+    final interval =
+        sessionConfig.intervalMinutes > 0 ? sessionConfig.intervalMinutes : _slotDurationMinutes;
+    final sortedSlots = _selectedStartMinutesForCreate.toList()..sort();
+    final startMinutes = sortedSlots.first;
+    final endMinutes = sortedSlots.last + interval;
+    return ReservationPrefill(
+      day: _selectedDay,
+      locationName: selectedLocation,
+      startMinutes: startMinutes,
+      endMinutes: endMinutes,
+    );
+  }
+
+  Future<void> _openReservationCreateDialog() async {
+    final prefill = _buildReservationPrefillFromSelection();
+    if (prefill == null || !mounted) {
+      return;
+    }
+    final initialQuery = _aramaController.text.trim();
+    final selectedStudentId = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        final searchController = TextEditingController(text: initialQuery);
+        var query = initialQuery;
+        final sortedStudents = danisanlar.toList()
+          ..sort((a, b) {
+            final nameA = (a['adi'] ?? '').toString();
+            final nameB = (b['adi'] ?? '').toString();
+            return nameA.compareTo(nameB);
+          });
+
+        List<Map<dynamic, dynamic>> filterStudents() {
+          final normalizedQuery = normalizeTr(query.trim());
+          if (normalizedQuery.isEmpty) {
+            return sortedStudents;
+          }
+          return sortedStudents.where((item) {
+            final name = normalizeTr((item['adi'] ?? '').toString());
+            final surname = normalizeTr((item['soyadi'] ?? '').toString());
+            final fullName = '$name $surname'.trim();
+            return name.contains(normalizedQuery) ||
+                surname.contains(normalizedQuery) ||
+                fullName.contains(normalizedQuery);
+          }).toList();
+        }
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final filtered = filterStudents();
+            return AlertDialog(
+              title: const Text('Rezervasyon Giriş'),
+              content: SizedBox(
+                width: 520,
+                height: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '${prefill.locationName} • ${DateFormat('dd.MM.yyyy').format(prefill.day)} • '
+                      '${_formatMinutes(prefill.startMinutes)} - ${_formatMinutes(prefill.endMinutes)}',
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: searchController,
+                      textCapitalization: TextCapitalization.words,
+                      onChanged: (value) {
+                        setDialogState(() {
+                          query = value;
+                        });
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Danışan ara',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final newId = await _openDanisanEklePage(
+                            initialFullName: query.trim(),
+                            openProfileAfterCreate: false,
+                          );
+                          if (!mounted || newId == null || newId.isEmpty) {
+                            return;
+                          }
+                          if (!dialogContext.mounted) {
+                            return;
+                          }
+                          Navigator.of(dialogContext).pop(newId);
+                        },
+                        icon: const Icon(Icons.person_add_alt_1),
+                        label: const Text('Ekle'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(
+                              child: Text('Danışan bulunamadı.'),
+                            )
+                          : ListView.separated(
+                              itemCount: filtered.length,
+                              separatorBuilder: (_, __) => const Divider(height: 1),
+                              itemBuilder: (_, index) {
+                                final item = filtered[index];
+                                final id = resolveStudentId(item).toString();
+                                final adi = (item['adi'] ?? '').toString();
+                                final soyadi = (item['soyadi'] ?? '').toString();
+                                return ListTile(
+                                  dense: true,
+                                  title: Text('$adi $soyadi'.trim()),
+                                  onTap: () => Navigator.of(dialogContext).pop(id),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Vazgeç'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (!mounted || selectedStudentId == null || selectedStudentId.trim().isEmpty) {
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DanisanProfil(
+          id: selectedStudentId.trim(),
+          openReservationFormOnStart: true,
+          initialReservationPrefill: prefill,
+        ),
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedLocationForCreate = null;
+      _selectedStartMinutesForCreate.clear();
     });
   }
 
@@ -576,11 +769,24 @@ class _SearchPageState extends State<SearchPage> {
       children: [
         Padding(
           padding: _pagePadding.copyWith(top: 8, bottom: 8),
-          child: Text(
-            'Rezervasyon Tablosu',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Rezervasyon Tablosu',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
+              ),
+              FilledButton.icon(
+                onPressed: _selectedStartMinutesForCreate.isEmpty
+                    ? null
+                    : _openReservationCreateDialog,
+                icon: const Icon(Icons.add_circle_outline),
+                label: const Text('Rezervasyon Yap'),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -617,7 +823,10 @@ class _SearchPageState extends State<SearchPage> {
                       reservations: reservations,
                       completedByReservation: completedByReservation,
                       sessionHours: sessionHours,
+                      selectedLocationForCreate: _selectedLocationForCreate,
+                      selectedStartMinutesForCreate: _selectedStartMinutesForCreate,
                       onDayChanged: _updateSelectedDay,
+                      onEmptyCellTap: _toggleCreateSlot,
                       onReservationTap: _handleReservationTap,
                     );
                   },
@@ -709,7 +918,9 @@ class _SearchPageState extends State<SearchPage> {
     return SizedBox(
       height: 52,
       child: ElevatedButton.icon(
-        onPressed: _openDanisanEklePage,
+        onPressed: () => _openDanisanEklePage(
+          initialFullName: _aramaController.text.trim(),
+        ),
         icon: const Icon(Icons.person_add_alt_1),
         label: const Text('Ekle'),
         style: ElevatedButton.styleFrom(
@@ -1177,6 +1388,13 @@ String formatTimeLabel(TimeOfDay time) {
   return '$hour:$minute';
 }
 
+String _formatMinutes(int totalMinutes) {
+  final normalized = totalMinutes % (24 * 60);
+  final hours = (normalized ~/ 60).toString().padLeft(2, '0');
+  final minutes = (normalized % 60).toString().padLeft(2, '0');
+  return '$hours:$minutes';
+}
+
 Map<String, Reservation> buildReservationLookup(
   List<Reservation> reservations, {
   required int intervalMinutes,
@@ -1349,7 +1567,10 @@ class ReservationGrid extends StatefulWidget {
     required this.reservations,
     required this.completedByReservation,
     required this.sessionHours,
+    this.selectedLocationForCreate,
+    required this.selectedStartMinutesForCreate,
     required this.onDayChanged,
+    required this.onEmptyCellTap,
     required this.onReservationTap,
   });
 
@@ -1358,7 +1579,10 @@ class ReservationGrid extends StatefulWidget {
   final List<Reservation> reservations;
   final Map<String, Set<String>> completedByReservation;
   final Map<String, dynamic> sessionHours;
+  final String? selectedLocationForCreate;
+  final Set<int> selectedStartMinutesForCreate;
   final ValueChanged<DateTime> onDayChanged;
+  final void Function(String location, int startMinutes) onEmptyCellTap;
   final ValueChanged<Reservation> onReservationTap;
 
   static const double _timeColumnWidth = 72;
@@ -1681,11 +1905,17 @@ class _ReservationGridState extends State<ReservationGrid> {
               _isSameReservationOwner(nextReservation, reservation);
           final isStart = reservation != null && !sameAsPrev;
           final isEnd = reservation != null && !sameAsNext;
+          final isSelectedEmptyCell = reservation == null &&
+              widget.selectedLocationForCreate == location &&
+              widget.selectedStartMinutesForCreate.contains(slot.startMinutes);
           return _buildReservationCell(
             context: context,
+            location: location,
+            slotStartMinutes: slot.startMinutes,
             reservation: reservation,
             isStart: isStart,
             isEnd: isEnd,
+            isSelectedEmptyCell: isSelectedEmptyCell,
             showLabel: reservation != null,
             borderColor: borderColor,
             completedByReservation: widget.completedByReservation,
@@ -1697,9 +1927,12 @@ class _ReservationGridState extends State<ReservationGrid> {
 
   Widget _buildReservationCell({
     required BuildContext context,
+    required String location,
+    required int slotStartMinutes,
     required Reservation? reservation,
     required bool isStart,
     required bool isEnd,
+    required bool isSelectedEmptyCell,
     required bool showLabel,
     required Color borderColor,
     required Map<String, Set<String>> completedByReservation,
@@ -1715,8 +1948,12 @@ class _ReservationGridState extends State<ReservationGrid> {
         reservation?.assignedUserColor ?? theme.colorScheme.surfaceVariant;
     final isCompleted = reservation != null &&
         _isReservationCompleted(reservation, completedByReservation);
+    final selectedEmptyCellColor = Color.alphaBlend(
+      theme.colorScheme.primary.withOpacity(0.2),
+      baseCellColor,
+    );
     final effectiveCellColor = reservation == null
-        ? baseCellColor
+        ? (isSelectedEmptyCell ? selectedEmptyCellColor : baseCellColor)
         : reservationColor.withOpacity(isCompleted ? 0.12 : 0.2);
     final labelColor = reservation?.assignedUserColor != null
         ? _resolveForegroundColor(reservationColor, theme.colorScheme.onSurface)
@@ -1755,8 +1992,9 @@ class _ReservationGridState extends State<ReservationGrid> {
       child: Material(
         color: effectiveCellColor,
         child: InkWell(
-          onTap:
-              reservation == null ? null : () => widget.onReservationTap(reservation),
+          onTap: reservation == null
+              ? () => widget.onEmptyCellTap(location, slotStartMinutes)
+              : () => widget.onReservationTap(reservation),
           child: Container(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
@@ -1766,7 +2004,15 @@ class _ReservationGridState extends State<ReservationGrid> {
               ),
             ),
             child: reservation == null
-                ? const SizedBox.shrink()
+                ? (isSelectedEmptyCell
+                    ? Center(
+                        child: Icon(
+                          Icons.check_circle,
+                          size: 18,
+                          color: theme.colorScheme.primary,
+                        ),
+                      )
+                    : const SizedBox.shrink())
                 : SizedBox.expand(
                     child: DecoratedBox(
                       decoration: BoxDecoration(

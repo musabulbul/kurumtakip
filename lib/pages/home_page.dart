@@ -3,9 +3,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:kurum_takip/pages/ara.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../controllers/user_controller.dart';
 import '../controllers/institution_controller.dart';
+import '../utils/permission_utils.dart';
 import 'detayli_ara.dart';
 import 'raporlar/raporlar_page.dart';
 
@@ -48,10 +50,44 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    userController.getUserInfo(userDocId);
+    await userController.getUserInfo(userDocId);
     await institutionController.getInstitutionInfo(
       userKurum,
       setAsOriginal: true,
+    );
+    await _maybeShowSetupDialog(userKurum);
+    await _maybeShowExpiryWarning(userKurum);
+  }
+
+  Future<void> _maybeShowSetupDialog(String kurumkodu) async {
+    if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    final prefKey = 'setup_hint_dismissed_$kurumkodu';
+    if (prefs.getBool(prefKey) == true) return;
+
+    // Sadece online kayıtlı kurumlara göster
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .get();
+      final kayitTipi = (doc.data()?['kayitTipi'] ?? '').toString();
+      if (kayitTipi != 'online_kayit') return;
+    } catch (_) {
+      return;
+    }
+
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _SetupHintDialog(
+        onDismiss: (dontShowAgain) async {
+          if (dontShowAgain) {
+            await prefs.setBool(prefKey, true);
+          }
+        },
+      ),
     );
   }
 
@@ -81,20 +117,96 @@ class _HomePageState extends State<HomePage> {
         return false;
       }
       final userDoc = query.docs.first;
-      final userData = userDoc.data() as Map<String, dynamic>;
+      final userData = userDoc.data();
       final institutionId = (userData['kurumkodu'] ?? '').toString();
       if (institutionId.isEmpty) {
         return false;
       }
-      userController.getUserInfo(userDoc.id);
+      await userController.getUserInfo(userDoc.id);
       await institutionController.getInstitutionInfo(
         institutionId,
         setAsOriginal: true,
       );
+      await _maybeShowSetupDialog(institutionId);
+      await _maybeShowExpiryWarning(institutionId);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  Future<void> _maybeShowExpiryWarning(String kurumkodu) async {
+    if (!mounted) return;
+
+    // Sadece yöneticilere göster
+    if (!isManagerUser(userController.data)) return;
+
+    // Kurumun güncel Firestore verisini oku (uyarı alanları için)
+    late Map<String, dynamic> kurumData;
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .get();
+      if (!doc.exists) return;
+      kurumData = doc.data()!;
+    } catch (_) {
+      return;
+    }
+
+    // bitisTarihi'ni parse et (DD.MM.YYYY)
+    final bitisTarihiStr = (kurumData['bitisTarihi'] ?? '').toString().trim();
+    if (bitisTarihiStr.isEmpty) return;
+
+    DateTime bitisTarihi;
+    try {
+      final parts = bitisTarihiStr.split('.');
+      if (parts.length != 3) return;
+      bitisTarihi = DateTime(
+        int.parse(parts[2]),
+        int.parse(parts[1]),
+        int.parse(parts[0]),
+      );
+    } catch (_) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final daysUntilExpiry = bitisTarihi.difference(today).inDays;
+
+    // Sadece 7 gün veya daha az kaldıysa göster
+    if (daysUntilExpiry > 7) return;
+
+    // "Bir daha gösterme" tıklandı mı? (bitisTarihi değişmediyse geçerli)
+    final uyariGizlendi = (kurumData['uyariGizlendi'] as bool?) ?? false;
+    final uyariGizlendiTarih =
+        (kurumData['uyariGizlendiTarih'] ?? '').toString().trim();
+    if (uyariGizlendi && uyariGizlendiTarih == bitisTarihiStr) return;
+
+    // Bugün zaten bir yöneticiye gösterildi mi?
+    final todayStr =
+        '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    final sonGosterimGunu =
+        (kurumData['uyariSonGosterimGunu'] ?? '').toString().trim();
+    if (sonGosterimGunu == todayStr) return;
+
+    // Bugün gösterildi olarak işaretle (diğer yöneticileri engelle)
+    try {
+      await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .update({'uyariSonGosterimGunu': todayStr});
+    } catch (_) {}
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _ExpiryWarningDialog(
+        bitisTarihiStr: bitisTarihiStr,
+        kurumkodu: kurumkodu,
+      ),
+    );
   }
 
   @override
@@ -184,5 +296,132 @@ class _HomePageState extends State<HomePage> {
         });
       });
     }
+  }
+}
+
+class _SetupHintDialog extends StatefulWidget {
+  const _SetupHintDialog({required this.onDismiss});
+  final Future<void> Function(bool dontShowAgain) onDismiss;
+
+  @override
+  State<_SetupHintDialog> createState() => _SetupHintDialogState();
+}
+
+class _SetupHintDialogState extends State<_SetupHintDialog> {
+  bool _dontShowAgain = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      icon: Icon(Icons.settings_suggest_rounded, color: cs.primary, size: 36),
+      title: const Text(
+        'Kurumunuzu Ayarlayın',
+        textAlign: TextAlign.center,
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Uygulamayı kullanmadan önce sol üst köşedeki menü düğmesinden '
+            'Ayarlar kısmına girerek aşağıdaki tanımlamaları yapınız:',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          _HintItem(icon: Icons.meeting_room_outlined, text: 'Mekan Ayarları'),
+          _HintItem(icon: Icons.category_outlined, text: 'Kategori ve İşlem Tanımları'),
+          _HintItem(icon: Icons.schedule_outlined, text: 'Saat Ayarları'),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Checkbox(
+                value: _dontShowAgain,
+                onChanged: (v) => setState(() => _dontShowAgain = v ?? false),
+              ),
+              const Text('Bir daha gösterme', style: TextStyle(fontSize: 13)),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () async {
+            Navigator.of(context).pop();
+            await widget.onDismiss(_dontShowAgain);
+          },
+          child: const Text('Tamam'),
+        ),
+      ],
+    );
+  }
+}
+
+class _HintItem extends StatelessWidget {
+  const _HintItem({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: cs.primary),
+          const SizedBox(width: 10),
+          Text(text, style: const TextStyle(fontSize: 13)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExpiryWarningDialog extends StatelessWidget {
+  const _ExpiryWarningDialog({
+    required this.bitisTarihiStr,
+    required this.kurumkodu,
+  });
+
+  final String bitisTarihiStr;
+  final String kurumkodu;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(Icons.warning_amber_rounded,
+          color: Colors.orange, size: 36),
+      title: const Text(
+        'Sözleşme Süresi Uyarısı',
+        textAlign: TextAlign.center,
+      ),
+      content: Text(
+        'Sözleşmeniz $bitisTarihiStr tarihinde dolmaktadır.\n\n'
+        'Uzatmak için müşteri temsilcinizle iletişime geçiniz.',
+        textAlign: TextAlign.center,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            try {
+              await FirebaseFirestore.instance
+                  .collection('kurumlar')
+                  .doc(kurumkodu)
+                  .update({
+                'uyariGizlendi': true,
+                'uyariGizlendiTarih': bitisTarihiStr,
+              });
+            } catch (_) {}
+            if (context.mounted) Navigator.of(context).pop();
+          },
+          child: const Text('Bir daha gösterme'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Tamam'),
+        ),
+      ],
+    );
   }
 }

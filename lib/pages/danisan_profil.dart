@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
+import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -16,6 +18,7 @@ import '../utils/image_utils.dart';
 import '../utils/phone_utils.dart';
 import '../utils/permission_utils.dart';
 import '../utils/text_utils.dart';
+import '../services/notification_service.dart';
 import '../services/photo_storage_service.dart';
 import '../services/sms_service.dart';
 
@@ -25,7 +28,12 @@ enum _ReservationMenuAction {
   delete,
 }
 
-enum _PackageMenuAction { complete }
+enum _ReservationWhatsAppAction {
+  reservationInfo,
+  reminder,
+}
+
+enum _PackageMenuAction { complete, update }
 
 enum _PaymentType { cash, card, transfer }
 
@@ -137,6 +145,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
   bool _photoLoading = false;
   String? _photoUrl;
   bool _isDeletingStudent = false;
+  bool _savingToContacts = false;
   bool _showPastReservations = false;
   bool _showPastPackages = false;
   bool _initialReservationFormHandled = false;
@@ -186,6 +195,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
   bool get _isManager => isManagerUser(user.data);
 
   bool get _canUpdateStudent => canUpdateStudent(user.data);
+  bool get _canAddToContacts => canAddToContacts(user.data);
 
   bool get _canViewContactInfo => canViewContactInfo(user.data);
 
@@ -202,6 +212,8 @@ class _DanisanProfilState extends State<DanisanProfil> {
   bool get _canTakePayment => canTakePayment(user.data);
 
   bool get _canMakeSale => canMakeSale(user.data);
+
+  bool get _canManagePackages => canManagePackages(user.data);
 
   void _logReservation(String message, [Object? details]) {
     if (!_enableReservationLogs) {
@@ -396,9 +408,9 @@ class _DanisanProfilState extends State<DanisanProfil> {
               const SizedBox(height: 12),
               _buildBalanceSection(data),
               const SizedBox(height: 16),
-              _buildPackagesSection(data),
-              const SizedBox(height: 16),
               _buildReservationsSection(data),
+              const SizedBox(height: 16),
+              _buildPackagesSection(data),
               const SizedBox(height: 16),
               _buildCompletedOperationsSection(),
             ],
@@ -739,7 +751,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
   Widget _buildPackagesSection(Map<String, dynamic> data) {
     final theme = Theme.of(context);
     final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
-    final canAddPackage = kurumkodu.isNotEmpty && _canUpdateStudent;
+    final canAddPackage = kurumkodu.isNotEmpty && _canManagePackages;
     final canAddReservation = kurumkodu.isNotEmpty && _canCreateReservation;
 
     return _buildSectionCard(
@@ -791,6 +803,11 @@ class _DanisanProfilState extends State<DanisanProfil> {
                   FilledButton(
                     onPressed: canAddPackage ? () => _openAddPackageDialog(data) : null,
                     child: const Text('+ Ekle'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: canAddPackage ? () => _openCreateCustomPackageDialog(data) : null,
+                    child: const Text('Oluştur'),
                   ),
                   const SizedBox(width: 8),
                   IconButton(
@@ -877,9 +894,15 @@ class _DanisanProfilState extends State<DanisanProfil> {
                   onSelected: (value) {
                     if (value == _PackageMenuAction.complete) {
                       _completePackageWithNote(item);
+                    } else if (value == _PackageMenuAction.update) {
+                      _openUpdatePackageDialog(item);
                     }
                   },
                   itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: _PackageMenuAction.update,
+                      child: Text('Güncelle'),
+                    ),
                     PopupMenuItem(
                       value: _PackageMenuAction.complete,
                       child: Text('Paketi tamamla'),
@@ -916,17 +939,28 @@ class _DanisanProfilState extends State<DanisanProfil> {
           ...item.operations.map((operation) => _buildPackageOperationRow(operation)),
           if (!isPast) ...[
             const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.tonal(
-                onPressed: canAddReservation
-                    ? () => _openPackageReservation(item, _danisanData ?? {})
-                    : null,
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
+            Row(
+              children: [
+                FilledButton.tonal(
+                  onPressed: canAddReservation
+                      ? () => _openPackageReservation(item, _danisanData ?? {})
+                      : null,
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: const Text('Rezervasyon Ekle'),
                 ),
-                child: const Text('Rezervasyon Ekle'),
-              ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: canAddReservation
+                      ? () => _openDirectSessionDialog(item, _danisanData ?? {})
+                      : null,
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: const Text('İşlem Yap'),
+                ),
+              ],
             ),
           ],
         ],
@@ -1299,6 +1333,1118 @@ class _DanisanProfilState extends State<DanisanProfil> {
       endDate: unlimited ? null : endDate,
       unlimited: unlimited,
     );
+  }
+
+  Future<void> _openCreateCustomPackageDialog(Map<String, dynamic> studentData) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    if (kurumkodu.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+        );
+      }
+      return;
+    }
+
+    final operationOptions = await _fetchOperationOptions(kurumkodu);
+    if (!mounted) return;
+
+    final now = DateUtils.dateOnly(DateTime.now());
+    final nameController = TextEditingController();
+    final descriptionController = TextEditingController();
+    final priceController = TextEditingController();
+    DateTime startDate = now;
+    DateTime endDate = DateTime(now.year + 1, now.month, now.day);
+    bool unlimited = false;
+    final selectedOperations = <_CustomPackageOp>[];
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> pickDate({required bool isStart}) async {
+              final current = isStart ? startDate : endDate;
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: current,
+                firstDate: DateTime(2000),
+                lastDate: DateTime(2100),
+                helpText: isStart ? 'Başlama tarihi seçin' : 'Bitiş tarihi seçin',
+              );
+              if (picked == null) return;
+              setDialogState(() {
+                if (isStart) {
+                  startDate = DateUtils.dateOnly(picked);
+                  if (!unlimited) {
+                    endDate = DateTime(startDate.year + 1, startDate.month, startDate.day);
+                  }
+                } else {
+                  endDate = DateUtils.dateOnly(picked);
+                }
+              });
+            }
+
+            Future<void> addOrEditOperation({_CustomPackageOp? existing}) async {
+              if (operationOptions.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('İşlem listesi bulunamadı.')),
+                );
+                return;
+              }
+              final result = await _showCustomPackageOperationPicker(
+                options: operationOptions,
+                existing: existing,
+                usedIds: selectedOperations
+                    .where((op) => op != existing)
+                    .map((op) => op.operationId)
+                    .toSet(),
+              );
+              if (result == null) return;
+              setDialogState(() {
+                if (existing == null) {
+                  selectedOperations.add(result);
+                } else {
+                  final index = selectedOperations.indexWhere(
+                    (op) => op.operationId == existing.operationId,
+                  );
+                  if (index != -1) selectedOperations[index] = result;
+                }
+              });
+            }
+
+            return AlertDialog(
+              title: const Text('Özel Paket Oluştur'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        labelText: 'Paket adı (opsiyonel)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: descriptionController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        labelText: 'Açıklama (opsiyonel)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      readOnly: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Başlama tarihi',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today_outlined),
+                      ),
+                      controller: TextEditingController(
+                        text: DateFormat('dd.MM.yyyy').format(startDate),
+                      ),
+                      onTap: () => pickDate(isStart: true),
+                    ),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      value: unlimited,
+                      onChanged: (value) {
+                        setDialogState(() {
+                          unlimited = value;
+                        });
+                      },
+                      title: const Text('Süresiz'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      readOnly: true,
+                      enabled: !unlimited,
+                      decoration: const InputDecoration(
+                        labelText: 'Bitiş tarihi',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today_outlined),
+                      ),
+                      controller: TextEditingController(
+                        text: unlimited ? 'Süresiz' : DateFormat('dd.MM.yyyy').format(endDate),
+                      ),
+                      onTap: unlimited ? null : () => pickDate(isStart: false),
+                    ),
+                    const SizedBox(height: 12),
+                    if (selectedOperations.isNotEmpty) ...[
+                      Builder(
+                        builder: (context) {
+                          final total = selectedOperations.fold(
+                            0.0,
+                            (acc, op) =>
+                                acc + (op.unlimited ? 0 : op.sessionCount * op.unitPrice),
+                          );
+                          final formatted = total % 1 == 0
+                              ? total.toStringAsFixed(0)
+                              : total.toStringAsFixed(2);
+                          return Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Tüm işlem toplamı: $formatted TL',
+                              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color:
+                                        Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    TextField(
+                      controller: priceController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Fiyat (TL)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'İşlemler',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => addOrEditOperation(),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Ekle'),
+                        ),
+                      ],
+                    ),
+                    if (selectedOperations.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4, bottom: 12),
+                        child: Text('Henüz işlem eklenmedi.'),
+                      )
+                    else
+                      Column(
+                        children: selectedOperations.map((op) {
+                          final sessionLabel =
+                              op.unlimited ? 'Sınırsız' : '${op.sessionCount} seans';
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(op.label),
+                            subtitle: Text(sessionLabel),
+                            trailing: Wrap(
+                              spacing: 4,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined),
+                                  tooltip: 'İşlemi düzenle',
+                                  onPressed: () => addOrEditOperation(existing: op),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  tooltip: 'İşlemi sil',
+                                  onPressed: () {
+                                    setDialogState(() {
+                                      selectedOperations.remove(op);
+                                    });
+                                  },
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final rawPrice = priceController.text.trim().replaceAll(',', '.');
+                    final price = double.tryParse(rawPrice) ?? 0;
+                    if (price <= 0) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Fiyat 0\'dan büyük olmalı.')),
+                      );
+                      return;
+                    }
+                    if (!unlimited && endDate.isBefore(startDate)) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Bitiş tarihi başlama tarihinden önce olamaz.'),
+                        ),
+                      );
+                      return;
+                    }
+                    if (selectedOperations.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('En az bir işlem ekleyin.')),
+                      );
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(true);
+                  },
+                  child: const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    await _saveCustomStudentPackage(
+      studentData: studentData,
+      name: nameController.text.trim(),
+      description: descriptionController.text.trim(),
+      price: double.tryParse(priceController.text.trim().replaceAll(',', '.')) ?? 0,
+      startDate: startDate,
+      endDate: unlimited ? null : endDate,
+      unlimited: unlimited,
+      operations: List.from(selectedOperations),
+    );
+  }
+
+  Future<_CustomPackageOp?> _showCustomPackageOperationPicker({
+    required List<_OperationOption> options,
+    required Set<String> usedIds,
+    _CustomPackageOp? existing,
+  }) async {
+    _OperationOption? selectedOption;
+    if (existing != null) {
+      try {
+        selectedOption = options.firstWhere((op) => op.id == existing.operationId);
+      } catch (_) {
+        selectedOption = options.isNotEmpty ? options.first : null;
+      }
+    }
+    final sessionController = TextEditingController(
+      text: existing == null || existing.unlimited ? '' : existing.sessionCount.toString(),
+    );
+    bool unlimited = existing?.unlimited ?? false;
+
+    return showDialog<_CustomPackageOp>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text(existing == null ? 'İşlem Ekle' : 'İşlem Güncelle'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<_OperationOption>(
+                    value: selectedOption,
+                    items: options
+                        .map(
+                          (op) => DropdownMenuItem<_OperationOption>(
+                            value: op,
+                            child: Text(op.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) => setState(() => selectedOption = value),
+                    decoration: const InputDecoration(
+                      labelText: 'İşlem',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    value: unlimited,
+                    onChanged: (value) {
+                      setState(() {
+                        unlimited = value;
+                        if (unlimited) sessionController.text = '';
+                      });
+                    },
+                    title: const Text('Sınırsız'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: sessionController,
+                    keyboardType: TextInputType.number,
+                    enabled: !unlimited,
+                    decoration: const InputDecoration(
+                      labelText: 'Seans sayısı',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Vazgeç'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final option = selectedOption;
+                    if (option == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Lütfen bir işlem seçin.')),
+                      );
+                      return;
+                    }
+                    if (usedIds.contains(option.id)) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Bu işlem zaten eklendi.')),
+                      );
+                      return;
+                    }
+                    int sessionCount = 0;
+                    if (!unlimited) {
+                      sessionCount = int.tryParse(sessionController.text.trim()) ?? 0;
+                      if (sessionCount <= 0) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Seans sayısı 1 veya daha büyük olmalı.'),
+                          ),
+                        );
+                        return;
+                      }
+                    }
+                    Navigator.of(context).pop(
+                      _CustomPackageOp(
+                        operationId: option.id,
+                        operationName: option.name,
+                        categoryId: option.categoryId,
+                        categoryName: option.categoryName,
+                        sessionCount: sessionCount,
+                        unlimited: unlimited,
+                        unitPrice: option.price,
+                      ),
+                    );
+                  },
+                  child: Text(existing == null ? 'Ekle' : 'Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _saveCustomStudentPackage({
+    required Map<String, dynamic> studentData,
+    required String name,
+    required String description,
+    required double price,
+    required DateTime startDate,
+    required DateTime? endDate,
+    required bool unlimited,
+    required List<_CustomPackageOp> operations,
+  }) async {
+    final now = DateTime.now();
+    final stamp = DateFormat('yyyyMMddHHmmss').format(now);
+    final seed = now.microsecondsSinceEpoch.toString().padLeft(16, '0');
+    final code = 'PKG-$stamp-${seed.substring(seed.length - 6)}';
+
+    final payload = <String, dynamic>{
+      'paketId': '',
+      'paketKodu': code,
+      'paketAdi': name,
+      if (description.isNotEmpty) 'paketAciklama': description,
+      'baslamaTarihi': Timestamp.fromDate(startDate),
+      if (!unlimited && endDate != null) 'bitisTarihi': Timestamp.fromDate(endDate),
+      'suresiz': unlimited,
+      'fiyat': price,
+      'islemler': operations.map((op) => op.toStudentMap()).toList(),
+      'durum': 'aktif',
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      final docRef = _studentPackageCollection.doc();
+      batch.set(docRef, payload);
+      batch.update(_danisanDoc, {
+        'bakiye': FieldValue.increment(price),
+        'sonislemtarihi': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+      if (mounted && _danisanData != null) {
+        setState(() {
+          final currentBalance = _parsePriceValue(_danisanData?['bakiye']);
+          _danisanData = {
+            ...?_danisanData,
+            'bakiye': currentBalance + price,
+            'sonislemtarihi': Timestamp.now(),
+          };
+        });
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Özel paket oluşturuldu.')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Paket oluşturulamadı: $error')),
+        );
+      }
+    }
+  }
+
+  // ── Paketi Güncelle ────────────────────────────────────────────────────────
+
+  Future<void> _openUpdatePackageDialog(_StudentPackageItem item) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    final operationOptions = await _fetchOperationOptions(kurumkodu);
+    if (!mounted) return;
+
+    // Mevcut işlemleri _CustomPackageOp'a dönüştür (unitPrice bilinmediği için 0)
+    final selectedOperations = item.operations
+        .map((op) => _CustomPackageOp(
+              operationId: op.operationId,
+              operationName: op.operationName,
+              categoryId: op.categoryId,
+              categoryName: op.categoryName,
+              sessionCount: op.totalSessions,
+              unlimited: op.unlimited,
+              unitPrice: 0,
+            ))
+        .toList();
+
+    final nameController = TextEditingController(text: item.name);
+    final descriptionController = TextEditingController(text: item.description);
+    final priceController = TextEditingController(
+      text: item.price % 1 == 0
+          ? item.price.toStringAsFixed(0)
+          : item.price.toStringAsFixed(2),
+    );
+    DateTime startDate = item.startDate;
+    DateTime endDate = item.endDate ??
+        DateTime(item.startDate.year + 1, item.startDate.month, item.startDate.day);
+    bool unlimited = item.unlimitedDuration;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> pickDate({required bool isStart}) async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: isStart ? startDate : endDate,
+                firstDate: DateTime(2000),
+                lastDate: DateTime(2100),
+                helpText: isStart ? 'Başlama tarihi seçin' : 'Bitiş tarihi seçin',
+              );
+              if (picked == null) return;
+              setDialogState(() {
+                if (isStart) {
+                  startDate = DateUtils.dateOnly(picked);
+                } else {
+                  endDate = DateUtils.dateOnly(picked);
+                }
+              });
+            }
+
+            Future<void> addOrEditOperation({_CustomPackageOp? existing}) async {
+              if (operationOptions.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('İşlem listesi bulunamadı.')),
+                );
+                return;
+              }
+              final result = await _showCustomPackageOperationPicker(
+                options: operationOptions,
+                existing: existing,
+                usedIds: selectedOperations
+                    .where((op) => op != existing)
+                    .map((op) => op.operationId)
+                    .toSet(),
+              );
+              if (result == null) return;
+              setDialogState(() {
+                if (existing == null) {
+                  selectedOperations.add(result);
+                } else {
+                  final idx = selectedOperations
+                      .indexWhere((op) => op.operationId == existing.operationId);
+                  if (idx != -1) selectedOperations[idx] = result;
+                }
+              });
+            }
+
+            return AlertDialog(
+              title: const Text('Paketi Güncelle'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        labelText: 'Paket adı (opsiyonel)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: descriptionController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        labelText: 'Açıklama (opsiyonel)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      readOnly: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Başlama tarihi',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today_outlined),
+                      ),
+                      controller: TextEditingController(
+                        text: DateFormat('dd.MM.yyyy').format(startDate),
+                      ),
+                      onTap: () => pickDate(isStart: true),
+                    ),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      value: unlimited,
+                      onChanged: (v) => setDialogState(() => unlimited = v),
+                      title: const Text('Süresiz'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      readOnly: true,
+                      enabled: !unlimited,
+                      decoration: const InputDecoration(
+                        labelText: 'Bitiş tarihi',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_today_outlined),
+                      ),
+                      controller: TextEditingController(
+                        text: unlimited
+                            ? 'Süresiz'
+                            : DateFormat('dd.MM.yyyy').format(endDate),
+                      ),
+                      onTap: unlimited ? null : () => pickDate(isStart: false),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: priceController,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Fiyat (TL)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text('İşlemler',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => addOrEditOperation(),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Ekle'),
+                        ),
+                      ],
+                    ),
+                    if (selectedOperations.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4, bottom: 12),
+                        child: Text('Henüz işlem eklenmedi.'),
+                      )
+                    else
+                      Column(
+                        children: selectedOperations.map((op) {
+                          final existing = item.operations
+                              .where((e) => e.operationId == op.operationId)
+                              .firstOrNull;
+                          final doneLabel = existing != null && existing.doneSessions > 0
+                              ? ' (Yapılan: ${existing.doneSessions})'
+                              : '';
+                          final sessionLabel = op.unlimited
+                              ? 'Sınırsız$doneLabel'
+                              : '${op.sessionCount} seans$doneLabel';
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(op.label),
+                            subtitle: Text(sessionLabel),
+                            trailing: Wrap(
+                              spacing: 4,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined),
+                                  tooltip: 'İşlemi düzenle',
+                                  onPressed: () => addOrEditOperation(existing: op),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  tooltip: 'İşlemi sil',
+                                  onPressed: () => setDialogState(
+                                      () => selectedOperations.remove(op)),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final rawPrice =
+                        priceController.text.trim().replaceAll(',', '.');
+                    final price = double.tryParse(rawPrice) ?? 0;
+                    if (price <= 0) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Fiyat 0\'dan büyük olmalı.')),
+                      );
+                      return;
+                    }
+                    if (!unlimited && endDate.isBefore(startDate)) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content:
+                              Text('Bitiş tarihi başlama tarihinden önce olamaz.'),
+                        ),
+                      );
+                      return;
+                    }
+                    if (selectedOperations.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('En az bir işlem ekleyin.')),
+                      );
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(true);
+                  },
+                  child: const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    await _updateStudentPackage(
+      item: item,
+      name: nameController.text.trim(),
+      description: descriptionController.text.trim(),
+      price: double.tryParse(priceController.text.trim().replaceAll(',', '.')) ?? 0,
+      startDate: startDate,
+      endDate: unlimited ? null : endDate,
+      unlimited: unlimited,
+      operations: List.from(selectedOperations),
+    );
+  }
+
+  Future<void> _updateStudentPackage({
+    required _StudentPackageItem item,
+    required String name,
+    required String description,
+    required double price,
+    required DateTime startDate,
+    required DateTime? endDate,
+    required bool unlimited,
+    required List<_CustomPackageOp> operations,
+  }) async {
+    // Mevcut seans ilerlemesini koru
+    final updatedOps = operations.map((op) {
+      final existing =
+          item.operations.where((e) => e.operationId == op.operationId).firstOrNull;
+      final done = existing?.doneSessions ?? 0;
+      final remaining = op.unlimited ? 0 : (op.sessionCount - done).clamp(0, op.sessionCount);
+      final map = <String, dynamic>{
+        'operationId': op.operationId,
+        'operationName': op.operationName,
+        'categoryId': op.categoryId,
+        'categoryName': op.categoryName,
+        'seansSayisi': op.sessionCount,
+        'sinirsiz': op.unlimited,
+        'yapilanSeans': done,
+      };
+      if (!op.unlimited) map['kalanSeans'] = remaining;
+      return map;
+    }).toList();
+
+    try {
+      await _studentPackageCollection.doc(item.id).update({
+        'paketAdi': name,
+        'paketAciklama': description,
+        'baslamaTarihi': Timestamp.fromDate(startDate),
+        'bitisTarihi': unlimited ? FieldValue.delete() : Timestamp.fromDate(endDate!),
+        'suresiz': unlimited,
+        'fiyat': price,
+        'islemler': updatedOps,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Paket güncellendi.')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Paket güncellenemedi: $error')),
+        );
+      }
+    }
+  }
+
+  // ── Direkt İşlem Yap ───────────────────────────────────────────────────────
+
+  Future<void> _openDirectSessionDialog(
+    _StudentPackageItem package,
+    Map<String, dynamic> studentData,
+  ) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    if (kurumkodu.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+        );
+      }
+      return;
+    }
+
+    final availableOps = package.operations
+        .where((op) => op.unlimited || op.remainingSessions > 0)
+        .toList();
+    if (availableOps.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Paket seans hakkı bulunmuyor.')),
+        );
+      }
+      return;
+    }
+
+    // Tam işlem tanımlarını (mekanIds için) ve mekanları yükle
+    final operationDefs = await _fetchOperationOptions(kurumkodu);
+    final allLocations = await _fetchMekanOptions(kurumkodu);
+    final users = _isManager ? await _fetchUserOptions(kurumkodu) : <_UserOption>[];
+    if (!mounted) return;
+
+    _StudentPackageOperation selectedOp = availableOps.first;
+    _MekanOption? selectedLocation;
+    _UserOption? selectedUser;
+    final noteController = TextEditingController();
+
+    List<_MekanOption> locationsFor(_StudentPackageOperation op) {
+      final def = operationDefs.where((d) => d.id == op.operationId).firstOrNull;
+      if (def == null || def.mekanIds.isEmpty) return allLocations;
+      final filtered = allLocations.where((m) => def.mekanIds.contains(m.id)).toList();
+      return filtered.isEmpty ? allLocations : filtered;
+    }
+
+    _UserOption? defaultUserFor(_StudentPackageOperation op) {
+      final def = operationDefs.where((d) => d.id == op.operationId).firstOrNull;
+      if (def == null) return null;
+      return users.where((u) {
+        if (def.defaultUserId?.isNotEmpty == true) return u.id == def.defaultUserId;
+        if (def.defaultUserName?.isNotEmpty == true) {
+          return u.shortLabel == def.defaultUserName ||
+              u.displayName == def.defaultUserName;
+        }
+        return false;
+      }).firstOrNull;
+    }
+
+    // İlk seçim için konum ve kullanıcı ayarla
+    final initialLocations = locationsFor(selectedOp);
+    selectedLocation =
+        initialLocations.length == 1 ? initialLocations.first : null;
+    if (_isManager) {
+      final currentUserId = _currentUserId();
+      final currentUserName = _currentUserDisplayName();
+      selectedUser = defaultUserFor(selectedOp) ??
+          _findUserOption(users, id: currentUserId, name: currentUserName);
+    }
+
+    var isSaving = false;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final filteredLocations = locationsFor(selectedOp);
+
+            return AlertDialog(
+              title: const Text('İşlem Yap'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<_StudentPackageOperation>(
+                      value: selectedOp,
+                      items: availableOps
+                          .map((op) => DropdownMenuItem(
+                                value: op,
+                                child: Text(
+                                  op.operationName.isNotEmpty
+                                      ? op.operationName
+                                      : 'İşlem',
+                                ),
+                              ))
+                          .toList(),
+                      onChanged: isSaving
+                          ? null
+                          : (op) {
+                              if (op == null) return;
+                              setDialogState(() {
+                                selectedOp = op;
+                                final locs = locationsFor(op);
+                                selectedLocation =
+                                    locs.length == 1 ? locs.first : null;
+                                if (_isManager) {
+                                  selectedUser = defaultUserFor(op) ??
+                                      _findUserOption(users,
+                                          id: _currentUserId(),
+                                          name: _currentUserDisplayName());
+                                }
+                              });
+                            },
+                      decoration: const InputDecoration(
+                        labelText: 'İşlem',
+                        border: OutlineInputBorder(),
+                      ),
+                      isExpanded: true,
+                    ),
+                    const SizedBox(height: 12),
+                    if (filteredLocations.length == 1)
+                      InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Mekan',
+                          border: OutlineInputBorder(),
+                        ),
+                        child: Text(filteredLocations.first.name),
+                      )
+                    else
+                      DropdownButtonFormField<_MekanOption>(
+                        value: filteredLocations.contains(selectedLocation)
+                            ? selectedLocation
+                            : null,
+                        items: filteredLocations
+                            .map((m) => DropdownMenuItem(
+                                  value: m,
+                                  child: Text(m.name),
+                                ))
+                            .toList(),
+                        onChanged: isSaving
+                            ? null
+                            : (m) => setDialogState(() => selectedLocation = m),
+                        decoration: const InputDecoration(
+                          labelText: 'Mekan',
+                          border: OutlineInputBorder(),
+                        ),
+                        isExpanded: true,
+                      ),
+                    const SizedBox(height: 12),
+                    if (_isManager)
+                      DropdownButtonFormField<_UserOption>(
+                        value: selectedUser,
+                        items: users
+                            .map((u) => DropdownMenuItem(
+                                  value: u,
+                                  child: Text(u.displayName),
+                                ))
+                            .toList(),
+                        onChanged: isSaving
+                            ? null
+                            : (u) => setDialogState(() => selectedUser = u),
+                        decoration: const InputDecoration(
+                          labelText: 'İşlemi yapan',
+                          border: OutlineInputBorder(),
+                        ),
+                        isExpanded: true,
+                      )
+                    else
+                      InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'İşlemi yapan',
+                          border: OutlineInputBorder(),
+                        ),
+                        child: Text(_currentUserDisplayName()),
+                      ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: noteController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        labelText: 'Not (opsiyonel)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      isSaving ? null : () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final loc = filteredLocations.length == 1
+                              ? filteredLocations.first
+                              : selectedLocation;
+                          if (loc == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Lütfen mekan seçin.')),
+                            );
+                            return;
+                          }
+                          setDialogState(() => isSaving = true);
+                          final ok = await _saveDirectSession(
+                            package: package,
+                            operation: selectedOp,
+                            location: loc,
+                            assignedUserId: _isManager
+                                ? (selectedUser?.id ?? _currentUserId())
+                                : _currentUserId(),
+                            assignedUserName: _isManager
+                                ? (selectedUser?.displayName ??
+                                    _currentUserDisplayName())
+                                : _currentUserDisplayName(),
+                            note: noteController.text.trim(),
+                            studentData: studentData,
+                          );
+                          if (!mounted) return;
+                          if (ok) {
+                            if (dialogContext.mounted) {
+                              Navigator.of(dialogContext).pop(true);
+                            }
+                          } else {
+                            setDialogState(() => isSaving = false);
+                          }
+                        },
+                  child: const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    noteController.dispose();
+
+    if (confirmed == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('İşlem kaydedildi.')),
+      );
+    }
+  }
+
+  Future<bool> _saveDirectSession({
+    required _StudentPackageItem package,
+    required _StudentPackageOperation operation,
+    required _MekanOption location,
+    required String assignedUserId,
+    required String assignedUserName,
+    required String note,
+    required Map<String, dynamic> studentData,
+  }) async {
+    final operationsRef = _danisanDoc.collection('islemler').doc();
+    final packageRef = _studentPackageCollection.doc(package.id);
+    final performedById = _currentUserId();
+    final performedByName = _currentUserDisplayName();
+
+    final payload = <String, dynamic>{
+      'locationName': location.name,
+      'operationId': operation.operationId,
+      'operationName': operation.operationName,
+      'operationCategoryId': operation.categoryId,
+      'operationCategoryName': operation.categoryName,
+      'operationPrice': 0,
+      'assignedUserId': assignedUserId,
+      'assignedUserName': assignedUserName,
+      'performedById': performedById,
+      'performedByName': performedByName,
+      'note': note,
+      'entryType': 'direct',
+      'paketId': package.id,
+      'paketKodu': package.code,
+      'paketAdi': package.name,
+      'completedAt': FieldValue.serverTimestamp(),
+    };
+
+    try {
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final packageSnapshot = await transaction.get(packageRef);
+        if (!packageSnapshot.exists) return;
+        transaction.set(operationsRef, payload);
+        transaction.update(_danisanDoc, {
+          'sonislemtarihi': FieldValue.serverTimestamp(),
+        });
+        final usageUpdate = _buildPackageUsageUpdate(
+          packageSnapshot.data() ?? {},
+          operation.operationId,
+        );
+        if (usageUpdate != null) {
+          transaction.update(packageRef, usageUpdate);
+        }
+      });
+      // Atanan kullanıcıya bildirim (kendisi kaydediyorsa gerek yok).
+      if (assignedUserId.isNotEmpty && assignedUserId != performedById) {
+        final studentName = _getStudentDisplayName();
+        final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+        final notif = NotificationService();
+        final allowed = await notif.canReceiveAssignmentNotification(
+          userId: assignedUserId,
+        );
+        if (allowed) {
+          notif.sendToUser(
+            userId: assignedUserId,
+            baslik: 'Yeni İşlem Ataması',
+            mesaj: '${operation.operationName}${studentName.isNotEmpty ? ' — $studentName' : ''}',
+            tip: 'atama',
+            veri: {'danisanId': widget.id, 'kurumkodu': kurumkodu},
+          ).ignore();
+        }
+      }
+      return true;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('İşlem kaydedilemedi: $error')),
+        );
+      }
+      return false;
+    }
   }
 
   Future<List<_PackageDefinitionOption>> _fetchAvailablePackageDefinitions() async {
@@ -2326,6 +3472,16 @@ class _DanisanProfilState extends State<DanisanProfil> {
                           : (value) {
                               setState(() {
                                 selectedLocation = value;
+                                // Reset operation if it's no longer valid for the new mekan
+                                if (selectedOperation != null) {
+                                  final ids = selectedOperation!.mekanIds;
+                                  final stillValid = ids.isEmpty ||
+                                      (value != null && ids.contains(value.id));
+                                  if (!stillValid) {
+                                    selectedOperation = null;
+                                    priceController.clear();
+                                  }
+                                }
                               });
                             },
                       decoration: const InputDecoration(
@@ -2335,29 +3491,42 @@ class _DanisanProfilState extends State<DanisanProfil> {
                       isExpanded: true,
                     ),
                     const SizedBox(height: 12),
-                    DropdownButtonFormField<_OperationOption>(
-                      value: selectedOperation,
-                      items: operations
-                          .map(
-                            (operation) => DropdownMenuItem(
-                              value: operation,
-                              child: Text(operation.label),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: isSaving
-                          ? null
-                          : (value) async {
-                              setState(() {
-                                selectedOperation = value;
-                              });
-                              await applyDefaultUser(value, setState);
-                            },
-                      decoration: const InputDecoration(
-                        labelText: 'İşlem',
-                        border: OutlineInputBorder(),
-                      ),
-                      isExpanded: true,
+                    Builder(
+                      builder: (context) {
+                        final filteredOps = operations.where((op) {
+                          if (op.mekanIds.isEmpty) return true;
+                          return selectedLocation != null &&
+                              op.mekanIds.contains(selectedLocation!.id);
+                        }).toList();
+                        final validSelectedOp =
+                            filteredOps.contains(selectedOperation)
+                                ? selectedOperation
+                                : null;
+                        return DropdownButtonFormField<_OperationOption>(
+                          initialValue: validSelectedOp,
+                          items: filteredOps
+                              .map(
+                                (operation) => DropdownMenuItem(
+                                  value: operation,
+                                  child: Text(operation.label),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: isSaving
+                              ? null
+                              : (value) async {
+                                  setState(() {
+                                    selectedOperation = value;
+                                  });
+                                  await applyDefaultUser(value, setState);
+                                },
+                          decoration: const InputDecoration(
+                            labelText: 'İşlem',
+                            border: OutlineInputBorder(),
+                          ),
+                          isExpanded: true,
+                        );
+                      },
                     ),
                     const SizedBox(height: 12),
                     TextFormField(
@@ -2928,17 +4097,22 @@ class _DanisanProfilState extends State<DanisanProfil> {
                 ),
                 const SizedBox(width: 8),
                 if (_canUpdateReservation) ...[
-                  OutlinedButton.icon(
+                  IconButton(
+                    tooltip: 'Güncelle',
                     onPressed: () => _openReservationUpdateForm(entry),
-                    icon: const Icon(Icons.edit_outlined, size: 18),
-                    label: const Text('Güncelle'),
-                    style: OutlinedButton.styleFrom(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      visualDensity: VisualDensity.compact,
-                    ),
+                    icon: const Icon(Icons.edit_outlined, size: 22),
+                    visualDensity: VisualDensity.compact,
                   ),
-                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: 'WhatsApp ile Gönder',
+                    onPressed: () => _showReservationWhatsAppActions(entry),
+                    icon: Image.asset(
+                      'assets/icons/whatsapp.png',
+                      width: 22,
+                      height: 22,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
                   PopupMenuButton<_ReservationMenuAction>(
                     onSelected: (value) {
                       switch (value) {
@@ -2999,7 +4173,9 @@ class _DanisanProfilState extends State<DanisanProfil> {
             ),
             const SizedBox(height: 8),
             if (hasOperations)
-              ...operations.map((operation) {
+              ...operations.asMap().entries.map((opEntry) {
+                final opIndex = opEntry.key;
+                final operation = opEntry.value;
                 final operationName = operation.operationName?.isNotEmpty == true
                     ? operation.operationName!
                     : 'İşlem';
@@ -3081,10 +4257,23 @@ class _DanisanProfilState extends State<DanisanProfil> {
                               minHeight: 36,
                             ),
                           ),
+                          if (operation.malzemeKullan)
+                            IconButton(
+                              tooltip: 'Malzemeler',
+                              onPressed: () => _openMalzemeDialog(entry, opIndex, operation.malzemeler),
+                              icon: const Icon(Icons.science_outlined),
+                              iconSize: 20,
+                              padding: EdgeInsets.zero,
+                              visualDensity: VisualDensity.compact,
+                              constraints: const BoxConstraints(
+                                minWidth: 36,
+                                minHeight: 36,
+                              ),
+                            ),
                           IconButton(
                             tooltip: 'İşlem Yap',
                             onPressed: (!isCompleted && canExecute)
-                                ? () => _openOperationExecutionDialog(entry, operation)
+                                ? () => _openOperationExecutionDialog(entry, operation, opIndex)
                                 : null,
                             icon: const Icon(Icons.check_circle_outline),
                             iconSize: 20,
@@ -3163,6 +4352,14 @@ class _DanisanProfilState extends State<DanisanProfil> {
         .trim();
   }
 
+  String _getStudentDisplayName() {
+    final data = _danisanData;
+    if (data == null) return '';
+    final first = (data['adi'] ?? '').toString().trim();
+    final last = (data['soyadi'] ?? '').toString().trim();
+    return [first, last].where((p) => p.isNotEmpty).join(' ');
+  }
+
   String _currentUserShortName() {
     return (user.data['kisaad'] ?? '').toString().trim();
   }
@@ -3219,6 +4416,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
   Future<void> _openOperationExecutionDialog(
     _ReservationEntry entry,
     _ReservationOperationData operation,
+    int opIndex,
   ) async {
     if (!_isOperationActionAllowed(operation)) {
       return;
@@ -3250,6 +4448,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
     );
     final noteController = TextEditingController(text: operation.note ?? '');
     var isSaving = false;
+    final execMalzemeler = <Map<String, dynamic>>[...operation.malzemeler];
 
     final result = await showDialog<bool>(
       context: context,
@@ -3344,6 +4543,151 @@ class _DanisanProfilState extends State<DanisanProfil> {
                       minLines: 2,
                       maxLines: 3,
                     ),
+                    if (operation.malzemeKullan) ...[
+                      const SizedBox(height: 12),
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Kullanılacak Malzemeler',
+                            style: Theme.of(context).textTheme.labelLarge,
+                          ),
+                          TextButton.icon(
+                            icon: const Icon(Icons.add, size: 16),
+                            label: const Text('Ekle'),
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
+                            onPressed: isSaving
+                                ? null
+                                : () async {
+                                    final kurumkodu2 = (kurum.data['kurumkodu'] ?? '').toString();
+                                    if (kurumkodu2.isEmpty) return;
+                                    try {
+                                      final snap = await FirebaseFirestore.instance
+                                          .collection('kurumlar')
+                                          .doc(kurumkodu2)
+                                          .collection('tuketimUrunler')
+                                          .orderBy('ad')
+                                          .get();
+                                      final urunler2 = snap.docs
+                                          .map((d) {
+                                            final dd = d.data();
+                                            return <String, dynamic>{
+                                              'id': d.id,
+                                              'ad': (dd['ad'] ?? '').toString(),
+                                              'cikisUnit': (dd['cikisUnit'] ?? '').toString(),
+                                              'icerikMiktari': dd['icerikMiktari'] is num
+                                                  ? (dd['icerikMiktari'] as num).toDouble()
+                                                  : 1.0,
+                                            };
+                                          })
+                                          .where((u) => (u['ad'] as String).isNotEmpty)
+                                          .toList();
+                                      if (!mounted || urunler2.isEmpty) return;
+                                      Map<String, dynamic>? sel = urunler2.first;
+                                      final qCtrl = TextEditingController();
+                                      if (!mounted) return;
+                                      final res = await showDialog<Map<String, dynamic>>(
+                                        context: context,
+                                        builder: (ic) => StatefulBuilder(
+                                          builder: (ic2, setInner2) => AlertDialog(
+                                            title: const Text('Malzeme Ekle'),
+                                            content: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                DropdownButtonFormField<Map<String, dynamic>>(
+                                                  value: sel,
+                                                  items: urunler2
+                                                      .map((u) => DropdownMenuItem(
+                                                            value: u,
+                                                            child: Text(u['ad'] as String),
+                                                          ))
+                                                      .toList(),
+                                                  onChanged: (v) => setInner2(() => sel = v),
+                                                  decoration: const InputDecoration(
+                                                    labelText: 'Malzeme',
+                                                    border: OutlineInputBorder(),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 12),
+                                                TextField(
+                                                  controller: qCtrl,
+                                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                                  decoration: InputDecoration(
+                                                    labelText: 'Miktar',
+                                                    suffixText: sel?['cikisUnit']?.toString() ?? '',
+                                                    border: const OutlineInputBorder(),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.of(ic).pop(),
+                                                child: const Text('İptal'),
+                                              ),
+                                              ElevatedButton(
+                                                onPressed: () {
+                                                  if (sel == null) return;
+                                                  final qty = double.tryParse(
+                                                      qCtrl.text.trim().replaceAll(',', '.'));
+                                                  if (qty == null || qty <= 0) return;
+                                                  qCtrl.dispose();
+                                                  Navigator.of(ic).pop(<String, dynamic>{
+                                                    'urunId': sel!['id'],
+                                                    'urunAdi': sel!['ad'],
+                                                    'cikisUnit': sel!['cikisUnit'],
+                                                    'icerikMiktari': sel!['icerikMiktari'],
+                                                    'miktar': qty,
+                                                  });
+                                                },
+                                                child: const Text('Ekle'),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                      if (res != null) setState(() => execMalzemeler.add(res));
+                                    } catch (_) {}
+                                  },
+                          ),
+                        ],
+                      ),
+                      if (execMalzemeler.isEmpty)
+                        Text(
+                          'Malzeme eklenmemiş.',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                        )
+                      else
+                        ...execMalzemeler.asMap().entries.map((e) {
+                          final idx = e.key;
+                          final m = e.value;
+                          final mStr = m['miktar'] is num
+                              ? (m['miktar'] as num).toStringAsFixed(2)
+                              : '-';
+                          final unit = (m['cikisUnit'] ?? '').toString();
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            title: Text((m['urunAdi'] ?? '').toString()),
+                            subtitle: Text('$mStr $unit'),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.remove_circle_outline),
+                              iconSize: 18,
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              onPressed: isSaving
+                                  ? null
+                                  : () => setState(() => execMalzemeler.removeAt(idx)),
+                            ),
+                          );
+                        }),
+                    ],
                   ],
                 ),
               ),
@@ -3390,6 +4734,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
                             performedByName:
                                 performerName.isNotEmpty ? performerName : rawPerformerName,
                             note: noteController.text.trim(),
+                            malzemeler: List<Map<String, dynamic>>.from(execMalzemeler),
                           );
                           if (!mounted || !dialogContext.mounted) {
                             return;
@@ -3433,6 +4778,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
     required String performedById,
     required String performedByName,
     required String note,
+    List<Map<String, dynamic>> malzemeler = const [],
   }) async {
     final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
     if (kurumkodu.isEmpty) {
@@ -3502,6 +4848,61 @@ class _DanisanProfilState extends State<DanisanProfil> {
           };
         });
       }
+      // Malzeme stok düşümü
+      if (malzemeler.isNotEmpty) {
+        final createdByName2 = [
+          (user.data['adi'] ?? '').toString().trim(),
+          (user.data['soyadi'] ?? '').toString().trim(),
+        ].where((p) => p.isNotEmpty).join(' ');
+        final createdById2 =
+            (user.data['email'] ?? user.data['uid'] ?? '').toString();
+        for (final m in malzemeler) {
+          try {
+            final urunId = (m['urunId'] ?? '').toString();
+            if (urunId.isEmpty) continue;
+            final cikisMiktar = m['miktar'] is num
+                ? (m['miktar'] as num).toDouble()
+                : 0.0;
+            final icerikMiktari = m['icerikMiktari'] is num
+                ? (m['icerikMiktari'] as num).toDouble()
+                : 1.0;
+            if (cikisMiktar <= 0 || icerikMiktari <= 0) continue;
+            final girisDusum = cikisMiktar / icerikMiktari;
+            final urunRef = FirebaseFirestore.instance
+                .collection('kurumlar')
+                .doc(kurumkodu)
+                .collection('tuketimUrunler')
+                .doc(urunId);
+            await FirebaseFirestore.instance.runTransaction((tx) async {
+              final snap = await tx.get(urunRef);
+              if (!snap.exists) return;
+              tx.update(urunRef, {
+                'stok': FieldValue.increment(-girisDusum),
+                'updatedAt': FieldValue.serverTimestamp(),
+              });
+            });
+            await FirebaseFirestore.instance
+                .collection('kurumlar')
+                .doc(kurumkodu)
+                .collection('tuketimHareketleri')
+                .add({
+              'urunId': urunId,
+              'urunAdi': (m['urunAdi'] ?? '').toString(),
+              'cikisUnit': (m['cikisUnit'] ?? '').toString(),
+              'icerikMiktari': icerikMiktari,
+              'cikisMiktar': cikisMiktar,
+              'girisDusum': girisDusum,
+              'tip': 'tuketim',
+              'note': 'İşlem: ${operation.operationName ?? ''}',
+              'createdAt': FieldValue.serverTimestamp(),
+              'createdById': createdById2,
+              'createdByName': createdByName2,
+            });
+          } catch (_) {
+            // Malzeme düşümü başarısız olsa bile işlem kaydını bozmayalım
+          }
+        }
+      }
       return true;
     } catch (error) {
       if (mounted) {
@@ -3527,6 +4928,31 @@ class _DanisanProfilState extends State<DanisanProfil> {
       return;
     }
     await _showReservationForm(selection, data);
+  }
+
+  Future<void> _blockSelectedSlots({
+    required DateTime day,
+    required _MekanOption location,
+    required Set<int> slots,
+    required int intervalMinutes,
+  }) async {
+    if (slots.isEmpty) return;
+    final sorted = slots.toList()..sort();
+    final startMinutes = sorted.first;
+    final endMinutes = sorted.last + intervalMinutes;
+    final slotDateTime = DateTime(day.year, day.month, day.day)
+        .add(Duration(minutes: startMinutes));
+    await _reservationCollection.add({
+      'date': Timestamp.fromDate(slotDateTime),
+      'startMinutes': startMinutes,
+      'endMinutes': endMinutes,
+      'locationName': location.name,
+      'locationId': location.id,
+      'customerId': '__blocked__',
+      'customerName': 'Kapalı',
+      'status': 'blocked',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
   }
 
   Future<_ReservationSelection?> _openReservationTable() async {
@@ -3558,6 +4984,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
     String? selectedLocationId;
     _MekanOption? selectedLocation;
     final selectedSlots = <int>{};
+    _ReservationSlot? blockedSelection;
 
     return showDialog<_ReservationSelection>(
       context: context,
@@ -3663,6 +5090,7 @@ class _DanisanProfilState extends State<DanisanProfil> {
                                   },
                                   onSlotTapped: (location, startMinutes) {
                                     setState(() {
+                                      blockedSelection = null;
                                       if (selectedLocationId != location.id) {
                                         selectedLocationId = location.id;
                                         selectedLocation = location;
@@ -3702,45 +5130,162 @@ class _DanisanProfilState extends State<DanisanProfil> {
                                       ),
                                     );
                                   },
+                                  canBlock: _canCreateReservation,
+                                  blockedSelectionId: blockedSelection?.id,
+                                  onBlockedCellTap: (reservation) {
+                                    setState(() {
+                                      selectedLocationId = null;
+                                      selectedLocation = null;
+                                      selectedSlots.clear();
+                                      blockedSelection =
+                                          blockedSelection?.id == reservation.id
+                                              ? null
+                                              : reservation;
+                                    });
+                                  },
                                 ),
                               ),
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        selection == null
-                                            ? 'Rezervasyon için bir hücre seçin.'
-                                            : '${selection.location.name} • '
-                                                '${DateFormat('dd.MM.yyyy').format(selection.day)} • '
-                                                '${_formatMinutes(selection.startMinutes)} - '
-                                                '${_formatMinutes(selection.endMinutes)}',
+                              // Bottom action bar
+                              Builder(builder: (context) {
+                                final theme = Theme.of(context);
+                                final hasEmptySelection = selectedSlots.isNotEmpty;
+                                final hasBlockedSelection = blockedSelection != null;
+                                final anySelection = hasEmptySelection || hasBlockedSelection;
+                                String statusText;
+                                if (hasBlockedSelection) {
+                                  statusText =
+                                      '${blockedSelection!.locationName} • '
+                                      '${DateFormat('dd.MM.yyyy').format(selectedDay)} • '
+                                      '${_formatMinutes(blockedSelection!.startMinutes)} - '
+                                      '${_formatMinutes(blockedSelection!.endMinutes)} '
+                                      '→ Kapalı';
+                                } else if (selection != null) {
+                                  statusText =
+                                      '${selection.location.name} • '
+                                      '${DateFormat('dd.MM.yyyy').format(selection.day)} • '
+                                      '${_formatMinutes(selection.startMinutes)} - '
+                                      '${_formatMinutes(selection.endMinutes)}';
+                                } else {
+                                  statusText = 'Rezervasyon için bir hücre seçin.';
+                                }
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.surface,
+                                    border: Border(
+                                      top: BorderSide(
+                                        color: theme.colorScheme.outlineVariant,
+                                        width: 0.6,
                                       ),
                                     ),
-                                    const SizedBox(width: 12),
-                                    TextButton(
-                                      onPressed: selectedSlots.isEmpty
-                                          ? null
-                                          : () {
-                                              setState(() {
-                                                selectedLocationId = null;
-                                                selectedLocation = null;
-                                                selectedSlots.clear();
-                                              });
-                                            },
-                                      child: const Text('Seçimi temizle'),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    FilledButton(
-                                      onPressed: selection == null
-                                          ? null
-                                          : () => Navigator.of(context).pop(selection),
-                                      child: const Text('Devam Et'),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                                  ),
+                                  padding: const EdgeInsets.fromLTRB(16, 8, 12, 12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        statusText,
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: hasBlockedSelection
+                                              ? theme.colorScheme.error
+                                              : theme.colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.end,
+                                        children: [
+                                          if (anySelection)
+                                            TextButton(
+                                              onPressed: () {
+                                                setState(() {
+                                                  selectedLocationId = null;
+                                                  selectedLocation = null;
+                                                  selectedSlots.clear();
+                                                  blockedSelection = null;
+                                                });
+                                              },
+                                              child: const Text('Temizle'),
+                                            ),
+                                          if (hasBlockedSelection && _canCreateReservation) ...[
+                                            const SizedBox(width: 8),
+                                            FilledButton.icon(
+                                              style: FilledButton.styleFrom(
+                                                backgroundColor:
+                                                    theme.colorScheme.errorContainer,
+                                                foregroundColor:
+                                                    theme.colorScheme.onErrorContainer,
+                                              ),
+                                              onPressed: () async {
+                                                final id = blockedSelection!.id;
+                                                final messenger =
+                                                    ScaffoldMessenger.of(context);
+                                                setState(() => blockedSelection = null);
+                                                await _reservationCollection.doc(id).delete();
+                                                if (mounted) {
+                                                  messenger.showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text('Saat randevulara açıldı.'),
+                                                    ),
+                                                  );
+                                                }
+                                              },
+                                              icon: const Icon(Icons.lock_open_rounded, size: 16),
+                                              label: const Text('Aç'),
+                                            ),
+                                          ],
+                                          if (hasEmptySelection && _canCreateReservation) ...[
+                                            const SizedBox(width: 8),
+                                            OutlinedButton.icon(
+                                              onPressed: () async {
+                                                final sortedSlots =
+                                                    selectedSlots.toList()..sort();
+                                                final messenger =
+                                                    ScaffoldMessenger.of(context);
+                                                await _blockSelectedSlots(
+                                                  day: selectedDay,
+                                                  location: selectedLocation!,
+                                                  slots: selectedSlots,
+                                                  intervalMinutes:
+                                                      sessionConfig.intervalMinutes,
+                                                );
+                                                setState(() {
+                                                  selectedLocationId = null;
+                                                  selectedLocation = null;
+                                                  selectedSlots.clear();
+                                                });
+                                                if (mounted) {
+                                                  messenger.showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        '${_formatMinutes(sortedSlots.first)} - '
+                                                        '${_formatMinutes(sortedSlots.last + sessionConfig.intervalMinutes)} arası kapatıldı.',
+                                                      ),
+                                                    ),
+                                                  );
+                                                }
+                                              },
+                                              icon: const Icon(Icons.lock_outline_rounded,
+                                                  size: 16),
+                                              label: const Text('Kapat'),
+                                            ),
+                                          ],
+                                          if (hasEmptySelection) ...[
+                                            const SizedBox(width: 8),
+                                            FilledButton(
+                                              onPressed: selection == null
+                                                  ? null
+                                                  : () =>
+                                                      Navigator.of(context).pop(selection),
+                                              child: const Text('Devam Et'),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
                             ],
                           );
                         },
@@ -3751,6 +5296,268 @@ class _DanisanProfilState extends State<DanisanProfil> {
               ),
             );
           },
+        );
+      },
+    );
+  }
+
+  Future<void> _openMalzemeDialog(
+    _ReservationEntry entry,
+    int opIndex,
+    List<Map<String, dynamic>> initialMalzemeler,
+  ) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    if (kurumkodu.isEmpty) return;
+
+    List<Map<String, dynamic>> urunler = [];
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .collection('tuketimUrunler')
+          .orderBy('ad')
+          .get();
+      urunler = snap.docs.map((d) {
+        final data = d.data();
+        return <String, dynamic>{
+          'id': d.id,
+          'ad': (data['ad'] ?? '').toString(),
+          'cikisUnit': (data['cikisUnit'] ?? '').toString(),
+          'icerikMiktari': data['icerikMiktari'] is num
+              ? (data['icerikMiktari'] as num).toDouble()
+              : 1.0,
+        };
+      }).where((u) => (u['ad'] as String).isNotEmpty).toList();
+    } catch (_) {}
+
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) {
+        final malzemeler = <Map<String, dynamic>>[...initialMalzemeler];
+        bool isSaving = false;
+
+        return StatefulBuilder(
+          builder: (ctx, setDlg) => AlertDialog(
+            title: const Text('Malzemeler'),
+            content: SizedBox(
+              width: 400,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (malzemeler.isEmpty)
+                      const Text('Malzeme eklenmemiş.')
+                    else
+                      ...malzemeler.asMap().entries.map((e) {
+                        final idx = e.key;
+                        final m = e.value;
+                        final miktarStr = m['miktar'] is num
+                            ? (m['miktar'] as num).toStringAsFixed(2)
+                            : '-';
+                        final unit = (m['cikisUnit'] ?? '').toString();
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: Text((m['urunAdi'] ?? '').toString()),
+                          subtitle: Text('$miktarStr $unit'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit_outlined),
+                                iconSize: 18,
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                onPressed: isSaving
+                                    ? null
+                                    : () async {
+                                        final qtyCtrl = TextEditingController(
+                                          text: m['miktar'] is num
+                                              ? (m['miktar'] as num).toStringAsFixed(2)
+                                              : '',
+                                        );
+                                        final newQty = await showDialog<double>(
+                                          context: ctx,
+                                          builder: (ic) => AlertDialog(
+                                            title: Text((m['urunAdi'] ?? '').toString()),
+                                            content: TextField(
+                                              controller: qtyCtrl,
+                                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                              autofocus: true,
+                                              decoration: InputDecoration(
+                                                labelText: 'Miktar',
+                                                suffixText: unit,
+                                                border: const OutlineInputBorder(),
+                                              ),
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.of(ic).pop(),
+                                                child: const Text('İptal'),
+                                              ),
+                                              ElevatedButton(
+                                                onPressed: () {
+                                                  final val = double.tryParse(
+                                                      qtyCtrl.text.trim().replaceAll(',', '.'));
+                                                  qtyCtrl.dispose();
+                                                  Navigator.of(ic).pop(val);
+                                                },
+                                                child: const Text('Kaydet'),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                        if (newQty != null && newQty > 0) {
+                                          setDlg(() => malzemeler[idx] = {...m, 'miktar': newQty});
+                                        }
+                                      },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.remove_circle_outline),
+                                iconSize: 18,
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                onPressed: isSaving
+                                    ? null
+                                    : () => setDlg(() => malzemeler.removeAt(idx)),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                    const SizedBox(height: 8),
+                    if (urunler.isNotEmpty)
+                      TextButton.icon(
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Malzeme Ekle'),
+                        onPressed: isSaving
+                            ? null
+                            : () async {
+                                Map<String, dynamic>? selected = urunler.first;
+                                final qtyCtrl = TextEditingController();
+                                final result = await showDialog<Map<String, dynamic>>(
+                                  context: ctx,
+                                  builder: (ic) => StatefulBuilder(
+                                    builder: (ic2, setInner) => AlertDialog(
+                                      title: const Text('Malzeme Ekle'),
+                                      content: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          DropdownButtonFormField<Map<String, dynamic>>(
+                                            value: selected,
+                                            items: urunler
+                                                .map((u) => DropdownMenuItem(
+                                                      value: u,
+                                                      child: Text(u['ad'] as String),
+                                                    ))
+                                                .toList(),
+                                            onChanged: (v) => setInner(() => selected = v),
+                                            decoration: const InputDecoration(
+                                              labelText: 'Malzeme',
+                                              border: OutlineInputBorder(),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          TextField(
+                                            controller: qtyCtrl,
+                                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                            decoration: InputDecoration(
+                                              labelText: 'Miktar',
+                                              suffixText: selected?['cikisUnit']?.toString() ?? '',
+                                              border: const OutlineInputBorder(),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.of(ic).pop(),
+                                          child: const Text('İptal'),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            if (selected == null) return;
+                                            final qty = double.tryParse(
+                                                qtyCtrl.text.trim().replaceAll(',', '.'));
+                                            if (qty == null || qty <= 0) return;
+                                            qtyCtrl.dispose();
+                                            Navigator.of(ic).pop(<String, dynamic>{
+                                              'urunId': selected!['id'],
+                                              'urunAdi': selected!['ad'],
+                                              'cikisUnit': selected!['cikisUnit'],
+                                              'icerikMiktari': selected!['icerikMiktari'],
+                                              'miktar': qty,
+                                            });
+                                          },
+                                          child: const Text('Ekle'),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                                if (result != null) setDlg(() => malzemeler.add(result));
+                              },
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.of(dialogCtx).pop(),
+                child: const Text('Vazgeç'),
+              ),
+              FilledButton(
+                onPressed: isSaving
+                    ? null
+                    : () async {
+                        setDlg(() => isSaving = true);
+                        try {
+                          final updatedOps = entry.operations.asMap().entries.map((e) {
+                            if (e.key != opIndex) return e.value;
+                            final op = e.value;
+                            return _ReservationOperationData(
+                              operationId: op.operationId,
+                              operationName: op.operationName,
+                              operationCategoryId: op.operationCategoryId,
+                              operationCategoryName: op.operationCategoryName,
+                              operationPrice: op.operationPrice,
+                              assignedUserId: op.assignedUserId,
+                              assignedUserName: op.assignedUserName,
+                              note: op.note,
+                              packageInstanceId: op.packageInstanceId,
+                              packageCode: op.packageCode,
+                              packageName: op.packageName,
+                              malzemeKullan: op.malzemeKullan,
+                              malzemeler: List<Map<String, dynamic>>.from(malzemeler),
+                            );
+                          }).toList();
+                          await _reservationCollection.doc(entry.id).update({
+                            'operations': updatedOps.map((o) => o.toMap()).toList(),
+                          });
+                          if (dialogCtx.mounted) Navigator.of(dialogCtx).pop();
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Malzemeler kaydedilemedi: $e')),
+                            );
+                          }
+                          setDlg(() => isSaving = false);
+                        }
+                      },
+                child: isSaving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Kaydet'),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -4410,7 +6217,11 @@ class _DanisanProfilState extends State<DanisanProfil> {
       'locationId': selection.location.id,
     });
 
-    final operations = allowedOperations ?? await _fetchOperationOptions(kurumkodu);
+    final allOperations = allowedOperations ?? await _fetchOperationOptions(kurumkodu);
+    final operations = allOperations.where((op) {
+      if (op.mekanIds.isEmpty) return true;
+      return op.mekanIds.contains(selection.location.id);
+    }).toList();
     final users = await _fetchUserOptions(kurumkodu);
     final isPackageReservation = package != null;
     final smsProviderId = (kurum.data['smsProviderId'] ?? '').toString().trim();
@@ -4630,20 +6441,22 @@ class _DanisanProfilState extends State<DanisanProfil> {
                         label: const Text('İşlem Ekle'),
                       ),
                     ),
-                    if (canSendReservationInfo)
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        value: sendReservationInfo,
-                        onChanged: isSaving
-                            ? null
-                            : (value) {
-                                setState(() {
-                                  sendReservationInfo = value ?? true;
-                                });
-                              },
-                        title: const Text('Rezervasyon bilgisi gönder'),
-                        controlAffinity: ListTileControlAffinity.leading,
-                      ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: canSendReservationInfo && sendReservationInfo,
+                      onChanged: (isSaving || !canSendReservationInfo)
+                          ? null
+                          : (value) {
+                              setState(() {
+                                sendReservationInfo = value ?? true;
+                              });
+                            },
+                      title: const Text('Rezervasyon bilgisi gönder'),
+                      subtitle: canSendReservationInfo
+                          ? null
+                          : const Text('SMS sağlayıcısı tanımlı değil'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
                   ],
                 ),
               ),
@@ -4709,6 +6522,8 @@ class _DanisanProfilState extends State<DanisanProfil> {
                                 packageInstanceId: entry.operation!.packageInstanceId,
                                 packageCode: entry.operation!.packageCode,
                                 packageName: entry.operation!.packageName,
+                                malzemeKullan: entry.operation!.malzemeKullan,
+                                malzemeler: entry.operation!.malzemeler,
                               ),
                             );
                           }
@@ -5313,6 +7128,8 @@ class _DanisanProfilState extends State<DanisanProfil> {
                                 packageInstanceId: null,
                                 packageCode: null,
                                 packageName: null,
+                                malzemeKullan: entry.operation!.malzemeKullan,
+                                malzemeler: entry.operation!.malzemeler,
                               ),
                             );
                           }
@@ -5420,6 +7237,18 @@ class _DanisanProfilState extends State<DanisanProfil> {
     try {
       final docRef = await _reservationCollection.add(payload);
       _logReservation('save success', {'docId': docRef.id});
+
+      // Fire-and-forget — bildirim hataları rezervasyon kaydını etkilemez.
+      _sendReservationNotifications(
+        docId: docRef.id,
+        kurumkodu: kurumkodu,
+        customerName: customerName,
+        startDateTime: startDateTime,
+        createdById: _currentUserId(),
+        assignedUserId: (primaryOperation.assignedUserId ?? '').trim(),
+        assignedUserName: (primaryOperation.assignedUserName ?? '').trim(),
+      ).ignore();
+
       SmsServiceResult? smsResult;
       if (sendReservationInfo) {
         smsResult = await _sendReservationInfoSms(
@@ -5450,6 +7279,63 @@ class _DanisanProfilState extends State<DanisanProfil> {
         );
       }
       return false;
+    }
+  }
+
+  Future<void> _sendReservationNotifications({
+    required String docId,
+    required String kurumkodu,
+    required String customerName,
+    required DateTime startDateTime,
+    required String createdById,
+    required String assignedUserId,
+    required String assignedUserName,
+  }) async {
+    _logReservation('notification dispatch start', {
+      'docId': docId,
+      'kurumkodu': kurumkodu,
+      'createdById': createdById,
+      'assignedUserId': assignedUserId,
+      'hasNotificationUrl': const String.fromEnvironment('NOTIFICATION_URL').isNotEmpty,
+    });
+    final notif = NotificationService(
+      notifUrl: const String.fromEnvironment('NOTIFICATION_URL'),
+    );
+    final dateStr =
+        '${startDateTime.day.toString().padLeft(2, '0')}.${startDateTime.month.toString().padLeft(2, '0')}.${startDateTime.year} '
+        '${startDateTime.hour.toString().padLeft(2, '0')}:${startDateTime.minute.toString().padLeft(2, '0')}';
+    final veri = <String, dynamic>{
+      'rezervasyonId': docId,
+      'danisanId': widget.id,
+      'kurumkodu': kurumkodu,
+    };
+
+    final assignedLabel =
+        assignedUserName.isNotEmpty ? assignedUserName : assignedUserId;
+    try {
+      await notif.sendBookingNotifications(
+        kurumkodu: kurumkodu,
+        reservationTitle: 'Yeni Rezervasyon',
+        reservationMessage: '$customerName — $dateStr',
+        assignmentTitle: 'Yeni İşlem Ataması',
+        assignmentMessage:
+            '$customerName için $dateStr tarihli işlem $assignedLabel\'a atandı',
+        reservationType: 'rezervasyon',
+        assignmentType: 'atama',
+        excludeUserId: createdById,
+        assignedUserId: assignedUserId,
+        veri: veri,
+      );
+      _logReservation('notification dispatch success', {
+        'docId': docId,
+      });
+    } catch (error, stackTrace) {
+      _logReservation('notification dispatch failed', {
+        'docId': docId,
+        'error': error.toString(),
+        'stack': stackTrace.toString(),
+      });
+      rethrow;
     }
   }
 
@@ -5561,6 +7447,24 @@ class _DanisanProfilState extends State<DanisanProfil> {
           };
         });
       }
+      // Atanan kullanıcıya bildirim (kendisi kaydediyorsa gerek yok).
+      final currentUserId = _currentUserId();
+      if (assignedUserId.isNotEmpty && assignedUserId != currentUserId) {
+        final studentName = _getStudentDisplayName();
+        final notif = NotificationService();
+        final allowed = await notif.canReceiveAssignmentNotification(
+          userId: assignedUserId,
+        );
+        if (allowed) {
+          notif.sendToUser(
+            userId: assignedUserId,
+            baslik: 'Yeni İşlem Ataması',
+            mesaj: '${operation.name}${studentName.isNotEmpty ? ' — $studentName' : ''}',
+            tip: 'atama',
+            veri: {'danisanId': widget.id, 'kurumkodu': kurumkodu},
+          ).ignore();
+        }
+      }
       return true;
     } catch (error) {
       if (mounted) {
@@ -5597,6 +7501,9 @@ class _DanisanProfilState extends State<DanisanProfil> {
     final updatedById = (user.data['email'] ?? user.data['uid'] ?? '').toString();
 
     final primaryOperation = operations.first;
+    final previousAssignedUserId = (entry.assignedUserId ?? '').trim();
+    final nextAssignedUserId = (primaryOperation.assignedUserId ?? '').trim();
+    final nextAssignedUserName = (primaryOperation.assignedUserName ?? '').trim();
     final assignedUserColor =
         await _resolveUserColorValueFromProfile(primaryOperation.assignedUserId);
     final payload = <String, dynamic>{
@@ -5621,6 +7528,57 @@ class _DanisanProfilState extends State<DanisanProfil> {
 
     try {
       await _reservationCollection.doc(entry.id).set(payload, SetOptions(merge: true));
+
+      final currentUserId = _currentUserId();
+      final assignmentChanged = nextAssignedUserId.isNotEmpty &&
+          nextAssignedUserId != previousAssignedUserId;
+      final shouldNotifyAssignee =
+          assignmentChanged && nextAssignedUserId != currentUserId;
+      _logReservation('update reservation assignment check', {
+        'reservationId': entry.id,
+        'previousAssignedUserId': previousAssignedUserId,
+        'nextAssignedUserId': nextAssignedUserId,
+        'assignmentChanged': assignmentChanged,
+        'shouldNotifyAssignee': shouldNotifyAssignee,
+      });
+
+      if (shouldNotifyAssignee) {
+        final notif = NotificationService(
+          notifUrl: const String.fromEnvironment('NOTIFICATION_URL'),
+        );
+        final allowed = await notif.canReceiveAssignmentNotification(
+          userId: nextAssignedUserId,
+        );
+        _logReservation('update reservation assignment permission', {
+          'reservationId': entry.id,
+          'assigneeId': nextAssignedUserId,
+          'allowed': allowed,
+        });
+        if (allowed) {
+          final studentName = _getStudentDisplayName();
+          final dateStr =
+              '${startDateTime.day.toString().padLeft(2, '0')}.${startDateTime.month.toString().padLeft(2, '0')}.${startDateTime.year} '
+              '${startDateTime.hour.toString().padLeft(2, '0')}:${startDateTime.minute.toString().padLeft(2, '0')}';
+          final assignedLabel =
+              nextAssignedUserName.isNotEmpty ? nextAssignedUserName : nextAssignedUserId;
+          notif.sendToUser(
+            userId: nextAssignedUserId,
+            baslik: 'Yeni İşlem Ataması',
+            mesaj:
+                '${studentName.isNotEmpty ? studentName : 'Danışan'} için $dateStr tarihli işlem $assignedLabel\'a atandı',
+            tip: 'atama',
+            veri: {
+              'rezervasyonId': entry.id,
+              'danisanId': widget.id,
+              'kurumkodu': kurumkodu,
+            },
+          ).ignore();
+          _logReservation('update reservation assignment notification queued', {
+            'reservationId': entry.id,
+            'assigneeId': nextAssignedUserId,
+          });
+        }
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Rezervasyon güncellendi.')),
@@ -5690,6 +7648,18 @@ class _DanisanProfilState extends State<DanisanProfil> {
         final defaultUserId = (data['defaultUserId'] ?? '').toString().trim();
         final defaultUserName =
             (data['defaultUserName'] ?? '').toString().trim();
+        final rawMekanIds = data['mekanIds'];
+        final mekanIds = rawMekanIds is List
+            ? rawMekanIds.whereType<String>().toList()
+            : <String>[];
+        final malzemeKullan = data['malzemeKullan'] == true;
+        final rawMalzemeler = data['malzemeler'];
+        final malzemeler = rawMalzemeler is List
+            ? rawMalzemeler
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList()
+            : <Map<String, dynamic>>[];
         options.add(
           _OperationOption(
             id: operationDoc.id,
@@ -5697,8 +7667,11 @@ class _DanisanProfilState extends State<DanisanProfil> {
             categoryId: categoryDoc.id,
             categoryName: categoryName,
             price: price,
+            mekanIds: mekanIds,
             defaultUserId: defaultUserId.isEmpty ? null : defaultUserId,
             defaultUserName: defaultUserName.isEmpty ? null : defaultUserName,
+            malzemeKullan: malzemeKullan,
+            malzemeler: malzemeler,
           ),
         );
       }
@@ -5888,6 +7861,206 @@ class _DanisanProfilState extends State<DanisanProfil> {
     );
   }
 
+  Future<void> _showReservationWhatsAppActions(_ReservationEntry entry) async {
+    final selected = await showModalBottomSheet<_ReservationWhatsAppAction>(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.event_note_outlined),
+                title: const Text('Randevu Kayıt Bildirimi'),
+                onTap: () => Navigator.of(sheetContext)
+                    .pop(_ReservationWhatsAppAction.reservationInfo),
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_active_outlined),
+                title: const Text('Randevu Hatırlatma'),
+                onTap: () => Navigator.of(sheetContext)
+                    .pop(_ReservationWhatsAppAction.reminder),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null) return;
+    await _sendReservationViaWhatsApp(
+      entry,
+      isReminder: selected == _ReservationWhatsAppAction.reminder,
+    );
+  }
+
+  Map<String, dynamic> _asStringMap(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return const <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> _loadMessageTemplate({
+    required bool isReminder,
+  }) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString().trim();
+    if (kurumkodu.isEmpty) {
+      return const <String, dynamic>{};
+    }
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .get();
+      final data = doc.data() ?? const <String, dynamic>{};
+      final settings = _asStringMap(data['settings']);
+      final messageSettings = _asStringMap(settings['messageSettings']);
+      final key = isReminder ? 'reminder' : 'reservation';
+      return _asStringMap(messageSettings[key]);
+    } catch (_) {
+      return const <String, dynamic>{};
+    }
+  }
+
+  String _resolveTemplateName({
+    required String fullName,
+    required String preferredName,
+    required String format,
+  }) {
+    if (format == 'full') {
+      return fullName.trim().isEmpty ? preferredName : fullName.trim();
+    }
+    String first = preferredName.trim();
+    if (first.isEmpty) {
+      final parts =
+          fullName.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+      if (parts.isNotEmpty) {
+        first = parts.first;
+      }
+    }
+    return first.isNotEmpty ? first : 'Danışan';
+  }
+
+  String _buildReservationMessageFromTemplate({
+    required _ReservationEntry entry,
+    required String targetName,
+    required bool isReminder,
+    required Map<String, dynamic> template,
+  }) {
+    final salutation =
+        (template['salutation'] ?? 'Sevgili').toString().trim();
+    final includeOperation = template['includeOperation'] != false;
+    final defaultBody = isReminder
+        ? 'randevunuzu hatırlatırız.'
+        : 'randevunuz oluşturulmuştur. Sağlıklı günler dileriz.';
+    final body = (template['body'] ?? defaultBody).toString().trim();
+    final dateLabel = _buildReservationDateLabel(entry);
+    final timeLabel = _buildReservationStartTimeLabel(entry);
+    final operationLabel = _buildReservationOperationsLabel(entry);
+    final locationLabel = entry.locationName?.trim() ?? '';
+
+    final lines = <String>[];
+    final greeting = [
+      if (salutation.isNotEmpty) salutation,
+      targetName,
+    ].join(' ').trim();
+    if (greeting.isNotEmpty) {
+      lines.add('$greeting,');
+      lines.add('');
+    }
+
+    final opPrefix =
+        includeOperation && operationLabel.isNotEmpty ? '$operationLabel ' : '';
+    lines.add('$dateLabel tarihinde saat $timeLabel için $opPrefix$body');
+    if (locationLabel.isNotEmpty) {
+      lines.add('📍 $locationLabel');
+    }
+    return lines.join('\n').trim();
+  }
+
+  Future<void> _sendReservationViaWhatsApp(
+    _ReservationEntry entry, {
+    required bool isReminder,
+  }) async {
+    final phone = (_danisanData?['telefon'] ?? '').toString().trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Danışanın telefon numarası kayıtlı değil.')),
+      );
+      return;
+    }
+    final template = await _loadMessageTemplate(isReminder: isReminder);
+    final firstName = (_danisanData?['adi'] ?? '').toString().trim();
+    final fullName = _resolveStudentName(_danisanData ?? const <String, dynamic>{});
+    final nameFormat = (template['nameFormat'] ?? 'first').toString().trim();
+    final targetName = _resolveTemplateName(
+      fullName: fullName,
+      preferredName: firstName,
+      format: nameFormat,
+    );
+    final message = _buildReservationMessageFromTemplate(
+      entry: entry,
+      targetName: targetName,
+      isReminder: isReminder,
+      template: template,
+    );
+
+    final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    _launchExternalUrl(
+      'https://wa.me/$cleanPhone?text=${Uri.encodeComponent(message)}',
+    );
+  }
+
+  void _sendLocationViaWhatsApp(String phone) {
+    final d = Map<String, dynamic>.from(kurum.data as Map);
+    final name =
+        (d['kurumadi'] ?? d['name'] ?? '').toString().trim();
+    final il = (d['il'] ?? '').toString().trim();
+    final ilce =
+        (d['district'] ?? d['ilce'] ?? '').toString().trim();
+    final adres =
+        (d['address'] ?? d['adres'] ?? '').toString().trim();
+    final kurumPhone =
+        (d['phone'] ?? d['ilgiliKisiTelefon'] ?? '').toString().trim();
+    final lat = (d['latitude'] as num?)?.toDouble();
+    final lng = (d['longitude'] as num?)?.toDouble();
+
+    final sb = StringBuffer();
+    if (name.isNotEmpty) {
+      sb.writeln('🏢 $name');
+      sb.writeln();
+    }
+    final adresParts =
+        [adres, ilce, il].where((s) => s.isNotEmpty).toList();
+    if (adresParts.isNotEmpty) {
+      sb.writeln('📍 ${adresParts.join(', ')}');
+    }
+    if (kurumPhone.isNotEmpty) {
+      sb.writeln('📞 $kurumPhone');
+    }
+    if (lat != null && lng != null) {
+      if (adresParts.isNotEmpty || kurumPhone.isNotEmpty) {
+        sb.writeln();
+      }
+      sb.write(
+          '🗺️ https://www.google.com/maps/search/?api=1&query=$lat,$lng');
+    }
+
+    if (sb.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Kurum konum bilgisi girilmemiş. Ayarlar > Konum bölümünden ekleyin.'),
+        ),
+      );
+      return;
+    }
+
+    final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    _launchExternalUrl(
+      'https://wa.me/$cleanPhone?text=${Uri.encodeComponent(sb.toString())}',
+    );
+  }
+
   Widget _buildContactActions(String phone) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -5897,7 +8070,6 @@ class _DanisanProfilState extends State<DanisanProfil> {
           onPressed: phone.isEmpty ? null : () => _launchExternalUrl('tel:$phone'),
           icon: const Icon(Icons.call, color: Colors.green),
         ),
-        const SizedBox(width: 4),
         IconButton(
           tooltip: 'WhatsApp',
           onPressed: phone.isEmpty
@@ -5911,8 +8083,105 @@ class _DanisanProfilState extends State<DanisanProfil> {
             height: 24,
           ),
         ),
+        IconButton(
+          tooltip: 'Konum Gönder',
+          onPressed:
+              phone.isEmpty ? null : () => _sendLocationViaWhatsApp(phone),
+          icon: const Icon(Icons.location_on_rounded, color: Colors.orange),
+        ),
+        if (!kIsWeb && _canAddToContacts)
+          _savingToContacts
+              ? const SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : IconButton(
+                  tooltip: 'Rehbere Ekle',
+                  onPressed: phone.isEmpty ? null : _addToContacts,
+                  icon: const Icon(Icons.person_add_outlined),
+                ),
       ],
     );
+  }
+
+  Future<void> _addToContacts() async {
+    final data = _danisanData;
+    if (data == null) return;
+
+    final adi = (data['adi'] ?? '').toString().trim();
+    final soyadi = (data['soyadi'] ?? '').toString().trim();
+    final phone = _resolvePhone(data);
+    if (phone.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final prefix = prefs.getString('contact_name_prefix') ?? '';
+    final suffix = prefs.getString('contact_name_suffix') ?? '';
+
+    final formattedFirst = '$prefix$adi';
+    final formattedLast = suffix.isNotEmpty ? '$soyadi$suffix' : soyadi;
+
+    // Duplicate kontrolü
+    final granted = await FlutterContacts.requestPermission(readonly: false);
+    if (!granted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Rehber izni verilmedi.')),
+      );
+      return;
+    }
+
+    setState(() => _savingToContacts = true);
+
+    try {
+      final normalized = phone.replaceAll(RegExp(r'\D'), '');
+      final short = normalized.length > 10 ? normalized.substring(normalized.length - 10) : normalized;
+
+      final existing = await FlutterContacts.getContacts(withProperties: true);
+      final duplicate = existing.any((c) => c.phones.any((p) {
+        final d = p.number.replaceAll(RegExp(r'\D'), '');
+        final s = d.length > 10 ? d.substring(d.length - 10) : d;
+        return s == short;
+      }));
+
+      if (!mounted) return;
+
+      if (duplicate) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${[adi, soyadi].where((e) => e.isNotEmpty).join(' ')} zaten rehberde kayıtlı.'),
+          ),
+        );
+        return;
+      }
+
+      final contact = Contact()
+        ..name.first = formattedFirst
+        ..name.last = formattedLast
+        ..phones = [Phone(phone)];
+
+      await FlutterContacts.insertContact(contact);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${[adi, soyadi].where((e) => e.isNotEmpty).join(' ')} rehbere eklendi.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Rehbere eklenirken hata oluştu.')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingToContacts = false);
+    }
   }
 
   Widget _buildProfileAvatar({required double radius}) {
@@ -6233,22 +8502,13 @@ class _DanisanProfilState extends State<DanisanProfil> {
 
   Widget _buildPhoneInfoRow(String phone) {
     if (!_canViewContactInfo) {
-      return Row(
-        children: [
-          Expanded(child: _buildInfoRow('Telefon', '-')),
-        ],
-      );
+      return _buildInfoRow('Telefon', '-');
     }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: _buildInfoRow('Telefon', phone.isEmpty ? '-' : phone),
-        ),
-        if (phone.isNotEmpty) ...[
-          const SizedBox(width: 12),
-          _buildContactActions(phone),
-        ],
+        _buildInfoRow('Telefon', phone.isEmpty ? '-' : phone),
+        if (phone.isNotEmpty) _buildContactActions(phone),
       ],
     );
   }
@@ -6785,6 +9045,7 @@ class _ReservationSlot {
     required this.customerShortName,
     required this.assignedUserId,
     required this.assignedUserColor,
+    required this.isBlocked,
   });
 
   final String id;
@@ -6796,6 +9057,7 @@ class _ReservationSlot {
   final String customerShortName;
   final String? assignedUserId;
   final Color? assignedUserColor;
+  final bool isBlocked;
 
   factory _ReservationSlot.fromSnapshot(
     QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
@@ -6833,9 +9095,12 @@ class _ReservationSlot {
         (assignedUserId.isNotEmpty
             ? _resolveUserColor(assignedUserId)
             : (assignedUserName.isNotEmpty ? _resolveUserColor(assignedUserName) : null));
+    final status = (data['status'] ?? '').toString().trim();
+    final customerId = (data['customerId'] ?? '').toString().trim();
+    final isBlocked = status == 'blocked' || customerId == '__blocked__';
     return _ReservationSlot(
       id: snapshot.id,
-      customerId: (data['customerId'] ?? '').toString().trim(),
+      customerId: customerId,
       customerName: customerName,
       locationName: (data['locationName'] ?? '').toString().trim(),
       startMinutes: startMinutes,
@@ -6843,6 +9108,7 @@ class _ReservationSlot {
       customerShortName: resolvedShortName,
       assignedUserId: assignedUserId.isNotEmpty ? assignedUserId : null,
       assignedUserColor: assignedUserColor,
+      isBlocked: isBlocked,
     );
   }
 }
@@ -6878,6 +9144,7 @@ class _OperationOption {
     required this.categoryId,
     required this.categoryName,
     required this.price,
+    this.mekanIds = const [],
     this.defaultUserId,
     this.defaultUserName,
     this.packageInstanceId,
@@ -6887,6 +9154,8 @@ class _OperationOption {
     this.packageTotal,
     this.packageDone,
     this.packageUnlimited,
+    this.malzemeKullan = false,
+    this.malzemeler = const [],
   });
 
   final String id;
@@ -6894,6 +9163,7 @@ class _OperationOption {
   final String categoryId;
   final String categoryName;
   final double price;
+  final List<String> mekanIds;
   final String? defaultUserId;
   final String? defaultUserName;
   final String? packageInstanceId;
@@ -6903,6 +9173,8 @@ class _OperationOption {
   final int? packageTotal;
   final int? packageDone;
   final bool? packageUnlimited;
+  final bool malzemeKullan;
+  final List<Map<String, dynamic>> malzemeler;
 
   String get label {
     if (categoryName.trim().isEmpty) {
@@ -7116,7 +9388,7 @@ class _StudentPackageOperation {
 }
 
 class _ReservationOperationData {
-  const _ReservationOperationData({
+  _ReservationOperationData({
     required this.operationId,
     required this.operationName,
     required this.operationCategoryId,
@@ -7128,6 +9400,8 @@ class _ReservationOperationData {
     required this.packageInstanceId,
     required this.packageCode,
     required this.packageName,
+    this.malzemeKullan = false,
+    this.malzemeler = const [],
   });
 
   final String? operationId;
@@ -7141,8 +9415,11 @@ class _ReservationOperationData {
   final String? packageInstanceId;
   final String? packageCode;
   final String? packageName;
+  final bool malzemeKullan;
+  final List<Map<String, dynamic>> malzemeler;
 
   factory _ReservationOperationData.fromMap(Map<String, dynamic> data) {
+    final rawMalzemeler = data['malzemeler'];
     return _ReservationOperationData(
       operationId: (data['operationId'] ?? '').toString().trim(),
       operationName: (data['operationName'] ?? '').toString().trim(),
@@ -7155,6 +9432,13 @@ class _ReservationOperationData {
       packageInstanceId: (data['paketId'] ?? '').toString().trim(),
       packageCode: (data['paketKodu'] ?? '').toString().trim(),
       packageName: (data['paketAdi'] ?? '').toString().trim(),
+      malzemeKullan: data['malzemeKullan'] == true,
+      malzemeler: rawMalzemeler is List
+          ? rawMalzemeler
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList()
+          : const [],
     );
   }
 
@@ -7171,6 +9455,8 @@ class _ReservationOperationData {
       'paketId': packageInstanceId,
       'paketKodu': packageCode,
       'paketAdi': packageName,
+      'malzemeKullan': malzemeKullan,
+      'malzemeler': malzemeler,
     };
   }
 }
@@ -7450,6 +9736,9 @@ class _ReservationTable extends StatefulWidget {
     required this.onDayChanged,
     required this.onSlotTapped,
     required this.onReservationTap,
+    required this.canBlock,
+    required this.onBlockedCellTap,
+    this.blockedSelectionId,
   });
 
   final DateTime selectedDay;
@@ -7461,6 +9750,9 @@ class _ReservationTable extends StatefulWidget {
   final ValueChanged<DateTime> onDayChanged;
   final void Function(_MekanOption location, int startMinutes) onSlotTapped;
   final ValueChanged<_ReservationSlot> onReservationTap;
+  final bool canBlock;
+  final ValueChanged<_ReservationSlot> onBlockedCellTap;
+  final String? blockedSelectionId;
 
   static const double _timeColumnWidth = 72;
   static const double _locationColumnWidth = 112;
@@ -7668,7 +9960,7 @@ class _ReservationTableState extends State<_ReservationTable> {
             height: _ReservationTable._headerHeight,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceVariant,
+              color: theme.colorScheme.surfaceContainerHighest,
               border: Border(
                 right: BorderSide(color: borderColor, width: 0.6),
               ),
@@ -7696,7 +9988,7 @@ class _ReservationTableState extends State<_ReservationTable> {
                           height: _ReservationTable._headerHeight,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: theme.colorScheme.surfaceVariant,
+                            color: theme.colorScheme.surfaceContainerHighest,
                             border: Border(
                               right: BorderSide(color: borderColor, width: 0.6),
                             ),
@@ -7790,7 +10082,7 @@ class _ReservationTableState extends State<_ReservationTable> {
             reservation: reservation,
             isStart: isStart,
             isEnd: isEnd,
-            showLabel: reservation != null,
+            showLabel: isStart,
             isSelected: isSelected,
             borderColor: borderColor,
           );
@@ -7811,27 +10103,33 @@ class _ReservationTableState extends State<_ReservationTable> {
     required Color borderColor,
   }) {
     final theme = Theme.of(context);
+    final isBlocked = reservation?.isBlocked ?? false;
+    final isBlockedSelected =
+        isBlocked && reservation?.id == widget.blockedSelectionId;
     final baseCellColor = Color.lerp(
           theme.colorScheme.surface,
-          theme.colorScheme.surfaceVariant,
+          theme.colorScheme.surfaceContainerHighest,
           0.12,
         ) ??
         theme.colorScheme.surface;
-    final selectedColor = Color.lerp(
-          theme.colorScheme.primary.withOpacity(0.18),
-          theme.colorScheme.surfaceVariant,
-          0.3,
-        ) ??
-        theme.colorScheme.primary.withOpacity(0.12);
+    final selectedColor = theme.colorScheme.primary.withValues(alpha: 0.15);
     final reservationColor =
-        reservation?.assignedUserColor ?? theme.colorScheme.surfaceVariant;
-    final cellColor = reservation == null
-        ? (isSelected ? selectedColor : baseCellColor)
-        : reservationColor.withOpacity(0.2);
-    final labelColor = reservation?.assignedUserColor != null
+        reservation?.assignedUserColor ?? theme.colorScheme.surfaceContainerHighest;
+    Color cellColor;
+    if (reservation == null) {
+      cellColor = isSelected ? selectedColor : baseCellColor;
+    } else if (isBlocked) {
+      cellColor = isBlockedSelected
+          ? theme.colorScheme.errorContainer.withValues(alpha: 0.35)
+          : theme.colorScheme.surfaceContainerHighest;
+    } else {
+      // Use baseCellColor so inner DecoratedBox fills seamlessly (no semi-transparent gap)
+      cellColor = baseCellColor;
+    }
+    final labelColor = reservation?.assignedUserColor != null && !isBlocked
         ? _resolveForegroundColor(reservationColor, theme.colorScheme.onSurface)
         : theme.colorScheme.onSurface;
-    final displayName = reservation == null
+    final displayName = reservation == null || isBlocked
         ? ''
         : (reservation.customerName.isNotEmpty
             ? reservation.customerName
@@ -7856,9 +10154,22 @@ class _ReservationTableState extends State<_ReservationTable> {
                         bottomRight: Radius.circular(8),
                       )
                     : BorderRadius.circular(2);
-    final showShadow = reservation != null && (isStart || isEnd);
+    final showShadow = reservation != null && !isBlocked && isStart;
     final bottomBorderColor =
         reservation != null && !isEnd ? Colors.transparent : borderColor;
+    // Adjust padding so consecutive reservation cells appear merged
+    final EdgeInsets cellPadding;
+    if (reservation == null || isBlocked) {
+      cellPadding = const EdgeInsets.symmetric(horizontal: 3, vertical: 1);
+    } else if (isStart && isEnd) {
+      cellPadding = const EdgeInsets.all(3);
+    } else if (isStart) {
+      cellPadding = const EdgeInsets.fromLTRB(3, 3, 3, 0);
+    } else if (isEnd) {
+      cellPadding = const EdgeInsets.fromLTRB(3, 0, 3, 3);
+    } else {
+      cellPadding = const EdgeInsets.symmetric(horizontal: 3);
+    }
     return SizedBox(
       width: _ReservationTable._locationColumnWidth,
       height: _ReservationTable._rowHeight,
@@ -7867,9 +10178,11 @@ class _ReservationTableState extends State<_ReservationTable> {
         child: InkWell(
           onTap: reservation == null
               ? () => widget.onSlotTapped(location, slot.startMinutes)
-              : () => widget.onReservationTap(reservation),
+              : isBlocked
+                  ? () => widget.onBlockedCellTap(reservation)
+                  : () => widget.onReservationTap(reservation),
           child: Container(
-            padding: const EdgeInsets.all(6),
+            padding: cellPadding,
             decoration: BoxDecoration(
               border: Border(
                 right: BorderSide(color: borderColor, width: 0.6),
@@ -7878,34 +10191,62 @@ class _ReservationTableState extends State<_ReservationTable> {
             ),
             child: reservation == null
                 ? const SizedBox.shrink()
-                : SizedBox.expand(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: reservationColor,
-                        borderRadius: cardRadius,
-                        boxShadow: showShadow
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 2),
+                : isBlocked
+                    ? (isStart
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.lock_outline_rounded,
+                                size: 12,
+                                color: isBlockedSelected
+                                    ? theme.colorScheme.error
+                                    : theme.colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Kapalı',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: isBlockedSelected
+                                      ? theme.colorScheme.error
+                                      : theme.colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
                                 ),
-                              ]
-                            : const [],
-                      ),
-                      child: Center(
-                        child: Text(
-                          labelText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: labelColor,
+                              ),
+                            ],
+                          )
+                        : const SizedBox.shrink())
+                    : SizedBox.expand(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: reservationColor,
+                            borderRadius: cardRadius,
+                            boxShadow: showShadow
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.08),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ]
+                                : const [],
+                          ),
+                          child: Center(
+                            child: Text(
+                              labelText,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: labelColor,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
           ),
         ),
       ),
@@ -8015,4 +10356,45 @@ List<_StudentPackageOperation> _parseStudentPackageOperations(dynamic raw) {
       })
       .where((operation) => operation.operationId.isNotEmpty)
       .toList();
+}
+
+class _CustomPackageOp {
+  _CustomPackageOp({
+    required this.operationId,
+    required this.operationName,
+    required this.categoryId,
+    required this.categoryName,
+    required this.sessionCount,
+    required this.unlimited,
+    required this.unitPrice,
+  });
+
+  final String operationId;
+  final String operationName;
+  final String categoryId;
+  final String categoryName;
+  final int sessionCount;
+  final bool unlimited;
+  final double unitPrice;
+
+  String get label {
+    final cat = categoryName.trim();
+    return cat.isEmpty ? operationName : '$cat • $operationName';
+  }
+
+  Map<String, dynamic> toStudentMap() {
+    final map = <String, dynamic>{
+      'operationId': operationId,
+      'operationName': operationName,
+      'categoryId': categoryId,
+      'categoryName': categoryName,
+      'seansSayisi': sessionCount,
+      'sinirsiz': unlimited,
+      'yapilanSeans': 0,
+    };
+    if (!unlimited) {
+      map['kalanSeans'] = sessionCount;
+    }
+    return map;
+  }
 }

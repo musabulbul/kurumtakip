@@ -9,26 +9,21 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.staff == true;
     }
 
-    function orgBookingEnabled(orgId) {
-      return exists(/databases/$(database)/documents/orgs/$(orgId)) &&
-        get(/databases/$(database)/documents/orgs/$(orgId)).data.bookingEnabled == true;
-    }
-
     // Slug çözümleme için herkese açık.
     match /orgSlugs/{slug} {
       allow read: if true;
-      allow write: if isStaff();
+      allow write: if isSignedIn();
     }
 
     // Public booking ekranının ihtiyaç duyduğu org alanları okunabilir.
     // Not: Hassas alanlar ayrı dokümanda tutulmalıdır.
     match /orgs/{orgId} {
-      allow get: if resource.data.bookingEnabled == true;
+      allow get: if true;
       allow list: if false;
       allow write: if isStaff();
 
       match /services/{serviceId} {
-        allow read: if orgBookingEnabled(orgId) && resource.data.active == true;
+        allow read: if true;
         allow write: if isStaff();
       }
     }
@@ -45,6 +40,78 @@ service cloud.firestore {
 
     match /bookingLocks/{lockId} {
       allow read, write: if false;
+    }
+
+    // Ana uygulama – oturum açmış kullanıcılar kendi verilerine erişebilir.
+    match /kullanicilar/{userId} {
+      allow read, write: if isSignedIn();
+
+      match /bildirimler/{notifId} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /pirimTanimlari/{doc} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /pirimKayitlari/{doc} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /izinler/{doc} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /personelOdemeleri/{doc} {
+        allow read, write: if isSignedIn();
+      }
+
+      match /personelHakedisleri/{doc} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // Collection group sorguları için (ör: islemler raporu, gelirler raporu)
+    match /{path=**}/islemler/{islemId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /{path=**}/odemeler/{odemeId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Platform geneli ayarlar (AI sistem promptu vb.)
+    // Okuma: herkese açık (rezervasyon sayfası da okur).
+    // Yazma: oturum açmış kullanıcıya açık (UI tarafında admin kontrolü yapılıyor).
+    match /sistem/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    match /kurumlar/{kurumId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+
+      // Online rezervasyon: giriş yapılmadan da yazılabilir.
+      match /rezervasyonlar/{rezId} {
+        allow read: if true;
+        allow create: if true;
+        allow update, delete: if isSignedIn();
+      }
+
+      // Online danışan kaydı: giriş yapılmadan da oluşturulabilir.
+      match /danisanlar/{danisanId} {
+        allow read: if isSignedIn();
+        allow create: if true;
+        allow update, delete: if isSignedIn();
+      }
+
+      match /{document=**} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
     }
   }
 }

@@ -22,11 +22,13 @@ import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 import 'danisan_ekle.dart';
 import 'danisan_profil.dart';
+import '../services/notification_service.dart';
 import '../utils/phone_utils.dart';
 import '../utils/student_utils.dart';
 import '../utils/permission_utils.dart';
 import '../utils/text_utils.dart';
 import 'settings/admin_settings_page.dart';
+import 'settings/ai_platform_settings_page.dart';
 import 'settings/gizlilik_politikasi_page.dart';
 
 class SearchPage extends StatefulWidget {
@@ -53,6 +55,7 @@ class _SearchPageState extends State<SearchPage> {
       _mekanSubscription;
 
   DateTime _selectedDay = DateUtils.dateOnly(DateTime.now());
+  bool _reservationListMode = false;
   final List<String> _fallbackLocations = const [
     'Mekan1',
     'Mekan2',
@@ -61,10 +64,18 @@ class _SearchPageState extends State<SearchPage> {
     'Mekan5',
   ];
   List<String> _locations = [];
+  Map<String, String> _locationNameToId = {};
   String? _selectedLocationForCreate;
   final Set<int> _selectedStartMinutesForCreate = <int>{};
+  Reservation? _blockedSelection;
 
   final EdgeInsets _pagePadding = const EdgeInsets.symmetric(horizontal: 16);
+
+  Map<String, dynamic> _asStringMap(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return const <String, dynamic>{};
+  }
 
   void filtre(String kelime) {
     final query = normalizeTr(kelime);
@@ -145,7 +156,7 @@ class _SearchPageState extends State<SearchPage> {
             final data = Map<String, dynamic>.from(doc.data());
             final name = (data['adi'] ?? '').toString().trim();
             final sequence = _parseSequenceNo(data['siraNo']);
-            return _MekanLocation(name: name, sequence: sequence);
+            return _MekanLocation(id: doc.id, name: name, sequence: sequence);
           })
           .where((mekan) => mekan.name.isNotEmpty)
           .toList()
@@ -156,6 +167,7 @@ class _SearchPageState extends State<SearchPage> {
       }
       setState(() {
         _locations = mekanlar.map((mekan) => mekan.name).toList();
+        _locationNameToId = {for (final m in mekanlar) m.name: m.id};
       });
     });
   }
@@ -216,7 +228,12 @@ class _SearchPageState extends State<SearchPage> {
               ],
             );
           }),
-          actions: const [HomeIconButton()],
+          actions: [
+            Obx(() => _NotificationBell(
+                  userId: (user.data['uid'] ?? '').toString(),
+                )),
+            const HomeIconButton(),
+          ],
         ),
         body: Column(
           children: [
@@ -260,7 +277,7 @@ class _SearchPageState extends State<SearchPage> {
               ),
               if (user.data["rol"] == "YÖNETİCİ")
                 ListTile(
-                  title: const Text("Kullanıcılar"),
+                  title: const Text("Personel Yönetimi"),
                   onTap: () {
                     Navigator.push(
                       context,
@@ -316,6 +333,21 @@ class _SearchPageState extends State<SearchPage> {
                     );
                   },
                 ),
+              // AI platform ayarları — yalnızca üst yönetici (admin) görebilir
+              if (user.data['ustyonetici']?.toString().toLowerCase() == 'admin')
+                ListTile(
+                  leading: const Icon(Icons.smart_toy_outlined),
+                  title: const Text('AI Platform Ayarları'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const AiPlatformSettingsPage(),
+                      ),
+                    );
+                  },
+                ),
               if (isManagerUser(user.data))
                 ListTile(
                   title: const Text("Ayarlar"),
@@ -329,6 +361,17 @@ class _SearchPageState extends State<SearchPage> {
                     );
                   },
                 ),
+              ListTile(
+                leading: const Icon(Icons.help_outline),
+                title: const Text('Yardım'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final uri = Uri.parse('https://kurumtakip-docs.web.app');
+                  if (await launcher.canLaunchUrl(uri)) {
+                    await launcher.launchUrl(uri, mode: launcher.LaunchMode.externalApplication);
+                  }
+                },
+              ),
               ListTile(
                 title: const Text('Gizlilik Politikasi'),
                 onTap: () {
@@ -501,6 +544,8 @@ class _SearchPageState extends State<SearchPage> {
   bool get _isManager =>
       (user.data['rol'] ?? '').toString().toUpperCase() == 'YÖNETİCİ';
 
+  bool get _canCreateReservation => canCreateReservation(user.data);
+
   bool get _canSearchStudents => canSearchStudents(user.data);
 
   bool get _canViewContactInfo => canViewContactInfo(user.data);
@@ -520,11 +565,13 @@ class _SearchPageState extends State<SearchPage> {
       _selectedDay = DateUtils.dateOnly(day);
       _selectedLocationForCreate = null;
       _selectedStartMinutesForCreate.clear();
+      _blockedSelection = null;
     });
   }
 
   void _toggleCreateSlot(String location, int startMinutes) {
     setState(() {
+      _blockedSelection = null;
       if (_selectedLocationForCreate != location) {
         _selectedLocationForCreate = location;
         _selectedStartMinutesForCreate
@@ -541,6 +588,57 @@ class _SearchPageState extends State<SearchPage> {
       }
       _selectedStartMinutesForCreate.add(startMinutes);
     });
+  }
+
+  Future<void> _blockSelectedSlots() async {
+    final location = _selectedLocationForCreate;
+    if (location == null || _selectedStartMinutesForCreate.isEmpty) return;
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    if (kurumkodu.isEmpty) return;
+    final sessionHours = _asMap(_asMap(kurum.data['settings'])['sessionHours']);
+    final sessionConfig = _resolveSessionHours(sessionHours, _selectedDay);
+    final interval =
+        sessionConfig.intervalMinutes > 0 ? sessionConfig.intervalMinutes : _slotDurationMinutes;
+    final sorted = _selectedStartMinutesForCreate.toList()..sort();
+    final startMinutes = sorted.first;
+    final endMinutes = sorted.last + interval;
+    final slotDateTime = DateTime(
+      _selectedDay.year,
+      _selectedDay.month,
+      _selectedDay.day,
+    ).add(Duration(minutes: startMinutes));
+    final locationId = _locationNameToId[location];
+    await FirebaseFirestore.instance
+        .collection('kurumlar')
+        .doc(kurumkodu)
+        .collection('rezervasyonlar')
+        .add({
+      'date': Timestamp.fromDate(slotDateTime),
+      'startMinutes': startMinutes,
+      'endMinutes': endMinutes,
+      'locationName': location,
+      if (locationId != null) 'locationId': locationId,
+      'customerId': '__blocked__',
+      'customerName': 'Kapalı',
+      'status': 'blocked',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    setState(() {
+      _selectedLocationForCreate = null;
+      _selectedStartMinutesForCreate.clear();
+    });
+  }
+
+  Future<void> _unblockReservation(Reservation reservation) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString();
+    if (kurumkodu.isEmpty) return;
+    await FirebaseFirestore.instance
+        .collection('kurumlar')
+        .doc(kurumkodu)
+        .collection('rezervasyonlar')
+        .doc(reservation.id)
+        .delete();
+    setState(() => _blockedSelection = null);
   }
 
   ReservationPrefill? _buildReservationPrefillFromSelection() {
@@ -773,69 +871,314 @@ class _SearchPageState extends State<SearchPage> {
             children: [
               Expanded(
                 child: Text(
-                  'Rezervasyon Tablosu',
+                  'Rezervasyonlar',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                 ),
               ),
-              FilledButton.icon(
-                onPressed: _selectedStartMinutesForCreate.isEmpty
-                    ? null
-                    : _openReservationCreateDialog,
-                icon: const Icon(Icons.add_circle_outline),
-                label: const Text('Rezervasyon Yap'),
+              IconButton(
+                tooltip: 'Liste görünümü',
+                icon: const Icon(Icons.view_list_outlined),
+                color: _reservationListMode
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+                onPressed: () => setState(() => _reservationListMode = true),
               ),
+              IconButton(
+                tooltip: 'Tablo görünümü',
+                icon: const Icon(Icons.grid_view_outlined),
+                color: !_reservationListMode
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+                onPressed: () => setState(() => _reservationListMode = false),
+              ),
+              if (!_reservationListMode) ...[
+                if (_blockedSelection != null && _canCreateReservation)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor:
+                            Theme.of(context).colorScheme.errorContainer,
+                        foregroundColor:
+                            Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                      onPressed: () => _unblockReservation(_blockedSelection!),
+                      icon: const Icon(Icons.lock_open_rounded, size: 16),
+                      label: const Text('Aç'),
+                    ),
+                  ),
+                if (_selectedStartMinutesForCreate.isNotEmpty &&
+                    _canCreateReservation)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: OutlinedButton.icon(
+                      onPressed: _blockSelectedSlots,
+                      icon: const Icon(Icons.lock_outline_rounded, size: 16),
+                      label: const Text('Kapat'),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: FilledButton.icon(
+                    onPressed: _selectedStartMinutesForCreate.isEmpty
+                        ? null
+                        : _openReservationCreateDialog,
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Rezervasyon Yap'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
-        Expanded(
-          child: Padding(
-            padding: _pagePadding.copyWith(bottom: 16),
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: reservationsQuery.snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return const Center(child: Text('Rezervasyonlar yüklenemedi.'));
-                }
-                if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                final reservations = snapshot.data!.docs
-                    .map((doc) => Reservation.fromSnapshot(doc))
-                    .toList();
-                final reservationIds = reservations.map((entry) => entry.id).toSet();
-                final completedStream = FirebaseFirestore.instance
-                    .collectionGroup('islemler')
-                    .snapshots();
-                return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: completedStream,
-                  builder: (context, completedSnapshot) {
-                    final completedByReservation = completedSnapshot.hasData
-                        ? _extractCompletedOperationKeys(
-                            completedSnapshot.data!.docs,
-                            reservationIds,
-                          )
-                        : <String, Set<String>>{};
-                    return ReservationGrid(
-                      selectedDay: _selectedDay,
-                      locations: _resolvedLocations,
-                      reservations: reservations,
-                      completedByReservation: completedByReservation,
-                      sessionHours: sessionHours,
-                      selectedLocationForCreate: _selectedLocationForCreate,
-                      selectedStartMinutesForCreate: _selectedStartMinutesForCreate,
-                      onDayChanged: _updateSelectedDay,
-                      onEmptyCellTap: _toggleCreateSlot,
-                      onReservationTap: _handleReservationTap,
-                    );
-                  },
-                );
-              },
+        if (_reservationListMode)
+          Expanded(
+            child: _buildReservationListView(kurumkodu),
+          )
+        else
+          Expanded(
+            child: Padding(
+              padding: _pagePadding.copyWith(bottom: 16),
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: reservationsQuery.snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return const Center(child: Text('Rezervasyonlar yüklenemedi.'));
+                  }
+                  if (!snapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  final reservations = snapshot.data!.docs
+                      .map((doc) => Reservation.fromSnapshot(doc))
+                      .toList();
+                  final reservationIds = reservations.map((entry) => entry.id).toSet();
+                  final completedStream = FirebaseFirestore.instance
+                      .collectionGroup('islemler')
+                      .snapshots();
+                  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: completedStream,
+                    builder: (context, completedSnapshot) {
+                      final completedByReservation = completedSnapshot.hasData
+                          ? _extractCompletedOperationKeys(
+                              completedSnapshot.data!.docs,
+                              reservationIds,
+                            )
+                          : <String, Set<String>>{};
+                      return ReservationGrid(
+                        selectedDay: _selectedDay,
+                        locations: _resolvedLocations,
+                        reservations: reservations,
+                        completedByReservation: completedByReservation,
+                        sessionHours: sessionHours,
+                        selectedLocationForCreate: _selectedLocationForCreate,
+                        selectedStartMinutesForCreate: _selectedStartMinutesForCreate,
+                        onDayChanged: _updateSelectedDay,
+                        onEmptyCellTap: _toggleCreateSlot,
+                        onReservationTap: _handleReservationTap,
+                        canBlock: _canCreateReservation,
+                        blockedSelectionId: _blockedSelection?.id,
+                        onBlockedCellTap: (reservation) {
+                          setState(() {
+                            _selectedLocationForCreate = null;
+                            _selectedStartMinutesForCreate.clear();
+                            _blockedSelection =
+                                _blockedSelection?.id == reservation.id
+                                    ? null
+                                    : reservation;
+                          });
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
             ),
           ),
-        ),
       ],
+    );
+  }
+
+  Widget _buildReservationListView(String kurumkodu) {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final from = today.subtract(const Duration(days: 7));
+    final to = today.add(const Duration(days: 60));
+
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+        .collection('kurumlar')
+        .doc(kurumkodu)
+        .collection('rezervasyonlar')
+        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('date', isLessThan: Timestamp.fromDate(to))
+        .orderBy('date');
+
+    if (!_canViewAllReservations) {
+      final currentUserId = _currentUserId();
+      query = FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .collection('rezervasyonlar')
+          .where('assignedUserId',
+              isEqualTo: currentUserId.isNotEmpty ? currentUserId : '__none__')
+          .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+          .where('date', isLessThan: Timestamp.fromDate(to))
+          .orderBy('date');
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: query.snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Center(child: Text('Rezervasyonlar yüklenemedi.'));
+        }
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final allItems = snapshot.data!.docs
+            .map((doc) => Reservation.fromSnapshot(doc))
+            .where((r) => !r.isBlocked && r.customerId.isNotEmpty)
+            .toList();
+
+        // Gün gün gruplandır
+        final Map<DateTime, List<Reservation>> byDay = {};
+        for (final r in allItems) {
+          final day = DateUtils.dateOnly(r.date ?? today);
+          byDay.putIfAbsent(day, () => []).add(r);
+        }
+
+        // Bugün en üstte; bugün + sonraki günler artan, önceki günler altta azalan
+        final futureDays = byDay.keys
+            .where((d) => !d.isBefore(today))
+            .toList()
+          ..sort();
+        final pastDays = byDay.keys
+            .where((d) => d.isBefore(today))
+            .toList()
+          ..sort((a, b) => b.compareTo(a));
+        final sortedDays = [...futureDays, ...pastDays];
+
+        if (sortedDays.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: _pagePadding,
+              child: const Text('Bu aralıkta rezervasyon bulunamadı.'),
+            ),
+          );
+        }
+
+        final theme = Theme.of(context);
+
+        return ListView.builder(
+          padding: _pagePadding.copyWith(top: 4, bottom: 24),
+          itemCount: sortedDays.length,
+          itemBuilder: (context, index) {
+            final day = sortedDays[index];
+            final items = byDay[day]!
+              ..sort((a, b) => a.startMinutes.compareTo(b.startMinutes));
+            final isToday = day == today;
+            final isTomorrow = day == today.add(const Duration(days: 1));
+            final dayLabel = isToday
+                ? 'Bugün • ${_formatDayLabel(day)}'
+                : isTomorrow
+                    ? 'Yarın • ${_formatDayLabel(day)}'
+                    : '${_trWeekday(day.weekday)}, ${_formatDayLabel(day)}';
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 16, bottom: 6),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 4,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          color: isToday
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.outlineVariant,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        dayLabel,
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: isToday
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${items.length}',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ...items.map((r) {
+                  final timeLabel =
+                      '${_formatMinutes(r.startMinutes)} - ${_formatMinutes(r.endMinutes)}';
+                  final opNames = r.operations
+                      .map((op) => op.operationName)
+                      .where((n) => n.isNotEmpty)
+                      .join(', ');
+                  final subtitle = [
+                    timeLabel,
+                    if (r.location.isNotEmpty) r.location,
+                    if (opNames.isNotEmpty) opNames,
+                    if (r.assignedUserName?.isNotEmpty == true)
+                      r.assignedUserName!,
+                  ].join(' • ');
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    child: ListTile(
+                      dense: true,
+                      title: Text(
+                        r.customerName.isNotEmpty ? r.customerName : '-',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(subtitle),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'WhatsApp ile Gönder',
+                            onPressed: () => _showReservationWhatsAppActions(r),
+                            icon: Image.asset(
+                              'assets/icons/whatsapp.png',
+                              width: 20,
+                              height: 20,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Icon(Icons.chevron_right),
+                        ],
+                      ),
+                      onTap: r.customerId.isNotEmpty
+                          ? () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      DanisanProfil(id: r.customerId),
+                                ),
+                              )
+                          : null,
+                    ),
+                  );
+                }),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -985,6 +1328,183 @@ class _SearchPageState extends State<SearchPage> {
     final uri = Uri.parse('tel:$phone');
     if (await launcher.canLaunchUrl(uri)) {
       await launcher.launchUrl(uri);
+    }
+  }
+
+  Future<void> _showReservationWhatsAppActions(Reservation reservation) async {
+    final selected = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.event_note_outlined),
+                title: const Text('Randevu Kayıt Bildirimi'),
+                onTap: () => Navigator.of(sheetContext).pop(false),
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_active_outlined),
+                title: const Text('Randevu Hatırlatma'),
+                onTap: () => Navigator.of(sheetContext).pop(true),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null) return;
+    await _sendReservationViaWhatsApp(
+      reservation,
+      isReminder: selected,
+    );
+  }
+
+  String _buildReservationDateLabel(Reservation reservation) {
+    final date = reservation.date;
+    return date != null
+        ? DateFormat('dd.MM.yyyy').format(date)
+        : 'Tarih belirtilmedi';
+  }
+
+  String _buildReservationStartTimeLabel(Reservation reservation) {
+    return _formatMinutes(reservation.startMinutes);
+  }
+
+  String _buildReservationOperationsLabel(Reservation reservation) {
+    final names = reservation.operations
+        .map((operation) => operation.operationName.trim())
+        .where((name) => name.isNotEmpty)
+        .toList();
+    if (names.isNotEmpty) return names.join(', ');
+    return 'İşlem belirtilmedi';
+  }
+
+  String _resolveTemplateName({
+    required String fullName,
+    required String format,
+  }) {
+    if (format == 'full') {
+      return fullName.trim().isNotEmpty ? fullName.trim() : 'Danışan';
+    }
+    final parts =
+        fullName.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+    if (parts.isNotEmpty) return parts.first;
+    return 'Danışan';
+  }
+
+  Future<Map<String, dynamic>> _loadMessageTemplate({
+    required bool isReminder,
+  }) async {
+    final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString().trim();
+    if (kurumkodu.isEmpty) return const <String, dynamic>{};
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .get();
+      final data = doc.data() ?? const <String, dynamic>{};
+      final settings = _asStringMap(data['settings']);
+      final messageSettings = _asStringMap(settings['messageSettings']);
+      final key = isReminder ? 'reminder' : 'reservation';
+      return _asStringMap(messageSettings[key]);
+    } catch (_) {
+      return const <String, dynamic>{};
+    }
+  }
+
+  String _buildReservationMessageFromTemplate({
+    required Reservation reservation,
+    required String targetName,
+    required bool isReminder,
+    required Map<String, dynamic> template,
+  }) {
+    final salutation =
+        (template['salutation'] ?? 'Sevgili').toString().trim();
+    final includeOperation = template['includeOperation'] != false;
+    final defaultBody = isReminder
+        ? 'randevunuzu hatırlatırız.'
+        : 'randevunuz oluşturulmuştur. Sağlıklı günler dileriz.';
+    final body = (template['body'] ?? defaultBody).toString().trim();
+    final dateLabel = _buildReservationDateLabel(reservation);
+    final timeLabel = _buildReservationStartTimeLabel(reservation);
+    final operationLabel = _buildReservationOperationsLabel(reservation);
+    final locationLabel = reservation.location.trim();
+
+    final lines = <String>[];
+    final greeting = [
+      if (salutation.isNotEmpty) salutation,
+      targetName,
+    ].join(' ').trim();
+    if (greeting.isNotEmpty) {
+      lines.add('$greeting,');
+      lines.add('');
+    }
+    final opPrefix =
+        includeOperation && operationLabel.isNotEmpty ? '$operationLabel ' : '';
+    lines.add('$dateLabel tarihinde saat $timeLabel için $opPrefix$body');
+    if (locationLabel.isNotEmpty) {
+      lines.add('📍 $locationLabel');
+    }
+    return lines.join('\n').trim();
+  }
+
+  Future<void> _sendReservationViaWhatsApp(
+    Reservation reservation, {
+    required bool isReminder,
+  }) async {
+    if (reservation.customerId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Danışan bilgisi bulunamadı.')),
+      );
+      return;
+    }
+
+    try {
+      final kurumkodu = (kurum.data['kurumkodu'] ?? '').toString().trim();
+      final studentDoc = await FirebaseFirestore.instance
+          .collection('kurumlar')
+          .doc(kurumkodu)
+          .collection('danisanlar')
+          .doc(reservation.customerId)
+          .get();
+      final studentData = studentDoc.data() ?? const <String, dynamic>{};
+      final phone = _resolvePhone(studentData);
+      if (phone.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Danışanın telefon numarası kayıtlı değil.'),
+          ),
+        );
+        return;
+      }
+
+      final template = await _loadMessageTemplate(isReminder: isReminder);
+      final nameFormat = (template['nameFormat'] ?? 'first').toString().trim();
+      final targetName = _resolveTemplateName(
+        fullName: reservation.customerName,
+        format: nameFormat,
+      );
+      final message = _buildReservationMessageFromTemplate(
+        reservation: reservation,
+        targetName: targetName,
+        isReminder: isReminder,
+        template: template,
+      );
+
+      final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+      final uri = Uri.parse(
+        'https://wa.me/$cleanPhone?text=${Uri.encodeComponent(message)}',
+      );
+      if (await launcher.canLaunchUrl(uri)) {
+        await launcher.launchUrl(uri, mode: launcher.LaunchMode.externalApplication);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('WhatsApp mesajı hazırlanamadı: $error')),
+      );
     }
   }
 
@@ -1217,6 +1737,9 @@ class Reservation {
     required this.assignedUserId,
     required this.assignedUserColor,
     required this.operations,
+    this.date,
+    this.assignedUserName,
+    this.isBlocked = false,
   });
 
   final String id;
@@ -1228,7 +1751,10 @@ class Reservation {
   final String customerShortName;
   final String? assignedUserId;
   final Color? assignedUserColor;
+  final String? assignedUserName;
   final List<_ReservationOperation> operations;
+  final bool isBlocked;
+  final DateTime? date;
 
   factory Reservation.fromSnapshot(
     QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
@@ -1267,9 +1793,12 @@ class Reservation {
             ? _resolveUserColor(assignedUserId)
             : (assignedUserName.isNotEmpty ? _resolveUserColor(assignedUserName) : null));
     final operations = _extractReservationOperations(data);
+    final rawCustomerId = (data['customerId'] ?? '').toString().trim();
+    final status = (data['status'] ?? '').toString().trim();
+    final isBlocked = status == 'blocked' || rawCustomerId == '__blocked__';
     return Reservation(
       id: snapshot.id,
-      customerId: (data['customerId'] ?? '').toString().trim(),
+      customerId: rawCustomerId,
       customerName: customerName,
       location: (data['locationName'] ?? '').toString().trim(),
       startMinutes: startMinutes,
@@ -1277,7 +1806,10 @@ class Reservation {
       customerShortName: resolvedShortName,
       assignedUserId: assignedUserId.isNotEmpty ? assignedUserId : null,
       assignedUserColor: assignedUserColor,
+      assignedUserName: assignedUserName.isNotEmpty ? assignedUserName : null,
       operations: operations,
+      isBlocked: isBlocked,
+      date: _readTimestamp(data['date']),
     );
   }
 }
@@ -1324,10 +1856,12 @@ List<_ReservationOperation> _extractReservationOperations(
 
 class _MekanLocation {
   const _MekanLocation({
+    required this.id,
     required this.name,
     required this.sequence,
   });
 
+  final String id;
   final String name;
   final int sequence;
 }
@@ -1386,6 +1920,19 @@ String formatTimeLabel(TimeOfDay time) {
   final hour = time.hour.toString().padLeft(2, '0');
   final minute = time.minute.toString().padLeft(2, '0');
   return '$hour:$minute';
+}
+
+String _formatDayLabel(DateTime day) {
+  const months = [
+    '', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık',
+  ];
+  return '${day.day} ${months[day.month]} ${day.year}';
+}
+
+String _trWeekday(int weekday) {
+  const days = ['', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+  return days[weekday];
 }
 
 String _formatMinutes(int totalMinutes) {
@@ -1572,6 +2119,9 @@ class ReservationGrid extends StatefulWidget {
     required this.onDayChanged,
     required this.onEmptyCellTap,
     required this.onReservationTap,
+    this.canBlock = false,
+    this.blockedSelectionId,
+    this.onBlockedCellTap,
   });
 
   final DateTime selectedDay;
@@ -1584,6 +2134,9 @@ class ReservationGrid extends StatefulWidget {
   final ValueChanged<DateTime> onDayChanged;
   final void Function(String location, int startMinutes) onEmptyCellTap;
   final ValueChanged<Reservation> onReservationTap;
+  final bool canBlock;
+  final String? blockedSelectionId;
+  final ValueChanged<Reservation>? onBlockedCellTap;
 
   static const double _timeColumnWidth = 72;
   static const double _locationColumnWidth = 112;
@@ -1908,6 +2461,22 @@ class _ReservationGridState extends State<ReservationGrid> {
           final isSelectedEmptyCell = reservation == null &&
               widget.selectedLocationForCreate == location &&
               widget.selectedStartMinutesForCreate.contains(slot.startMinutes);
+          // For isStart reserved cells, count how many consecutive slots this
+          // reservation spans so we can center the label over the full height.
+          int spanCount = 1;
+          if (isStart && reservation != null && !reservation.isBlocked) {
+            var checkMinutes = nextSlotStart;
+            while (true) {
+              final nextRes =
+                  reservationLookup[_reservationKey(location, checkMinutes)];
+              if (nextRes == null ||
+                  !_isSameReservationOwner(nextRes, reservation)) {
+                break;
+              }
+              spanCount++;
+              checkMinutes += step;
+            }
+          }
           return _buildReservationCell(
             context: context,
             location: location,
@@ -1916,7 +2485,7 @@ class _ReservationGridState extends State<ReservationGrid> {
             isStart: isStart,
             isEnd: isEnd,
             isSelectedEmptyCell: isSelectedEmptyCell,
-            showLabel: reservation != null,
+            spanCount: spanCount,
             borderColor: borderColor,
             completedByReservation: widget.completedByReservation,
           );
@@ -1933,11 +2502,15 @@ class _ReservationGridState extends State<ReservationGrid> {
     required bool isStart,
     required bool isEnd,
     required bool isSelectedEmptyCell,
-    required bool showLabel,
+    required int spanCount,
     required Color borderColor,
     required Map<String, Set<String>> completedByReservation,
   }) {
     final theme = Theme.of(context);
+    final isBlocked = reservation?.isBlocked ?? false;
+    final isReserved = reservation != null && !isBlocked;
+    final isBlockedSelected =
+        isBlocked && reservation?.id == widget.blockedSelectionId;
     final baseCellColor = Color.lerp(
           theme.colorScheme.surface,
           theme.colorScheme.surfaceVariant,
@@ -1946,46 +2519,47 @@ class _ReservationGridState extends State<ReservationGrid> {
         theme.colorScheme.surface;
     final reservationColor =
         reservation?.assignedUserColor ?? theme.colorScheme.surfaceVariant;
-    final isCompleted = reservation != null &&
+    final isCompleted = isReserved &&
         _isReservationCompleted(reservation, completedByReservation);
     final selectedEmptyCellColor = Color.alphaBlend(
-      theme.colorScheme.primary.withOpacity(0.2),
+      theme.colorScheme.primary.withValues(alpha: 0.2),
       baseCellColor,
     );
-    final effectiveCellColor = reservation == null
-        ? (isSelectedEmptyCell ? selectedEmptyCellColor : baseCellColor)
-        : reservationColor.withOpacity(isCompleted ? 0.12 : 0.2);
+
+    // Reserved middle/end rows are transparent so the isStart OverflowBox
+    // card (which overflows downward) shows through them.
+    final Color effectiveCellColor;
+    if (isReserved && !isStart) {
+      effectiveCellColor = Colors.transparent;
+    } else if (reservation == null) {
+      effectiveCellColor = isSelectedEmptyCell ? selectedEmptyCellColor : baseCellColor;
+    } else if (isBlocked) {
+      effectiveCellColor = isBlockedSelected
+          ? theme.colorScheme.errorContainer.withValues(alpha: 0.35)
+          : theme.colorScheme.surfaceContainerHighest;
+    } else {
+      effectiveCellColor = baseCellColor;
+    }
+
     final labelColor = reservation?.assignedUserColor != null
         ? _resolveForegroundColor(reservationColor, theme.colorScheme.onSurface)
         : theme.colorScheme.onSurface;
-    final displayName = reservation == null
+    final displayName = !isReserved
         ? ''
         : (reservation.customerName.isNotEmpty
             ? reservation.customerName
             : reservation.customerShortName);
-    final labelText = showLabel ? displayName : '';
-    final cardRadius = reservation == null
-        ? BorderRadius.circular(8)
-        : isStart && isEnd
-            ? BorderRadius.circular(8)
-            : isStart
-                ? const BorderRadius.only(
-                    topLeft: Radius.circular(8),
-                    topRight: Radius.circular(8),
-                    bottomLeft: Radius.circular(2),
-                    bottomRight: Radius.circular(2),
-                  )
-                : isEnd
-                    ? const BorderRadius.only(
-                        topLeft: Radius.circular(2),
-                        topRight: Radius.circular(2),
-                        bottomLeft: Radius.circular(8),
-                        bottomRight: Radius.circular(8),
-                      )
-                    : BorderRadius.circular(2);
-    final showShadow = reservation != null && (isStart || isEnd);
+
+    final showShadow = isReserved && isStart;
     final bottomBorderColor =
-        reservation != null && !isEnd ? Colors.transparent : borderColor;
+        isReserved && !isEnd ? Colors.transparent : borderColor;
+
+    // Empty/blocked cells keep their padding; reserved cells handle padding
+    // internally inside the OverflowBox card.
+    final EdgeInsets cellPadding = (isReserved)
+        ? EdgeInsets.zero
+        : const EdgeInsets.symmetric(horizontal: 3, vertical: 1);
+
     return SizedBox(
       width: ReservationGrid._locationColumnWidth,
       height: ReservationGrid._rowHeight,
@@ -1994,9 +2568,13 @@ class _ReservationGridState extends State<ReservationGrid> {
         child: InkWell(
           onTap: reservation == null
               ? () => widget.onEmptyCellTap(location, slotStartMinutes)
-              : () => widget.onReservationTap(reservation),
+              : isBlocked
+                  ? (widget.canBlock && widget.onBlockedCellTap != null
+                      ? () => widget.onBlockedCellTap!(reservation)
+                      : null)
+                  : () => widget.onReservationTap(reservation),
           child: Container(
-            padding: const EdgeInsets.all(6),
+            padding: cellPadding,
             decoration: BoxDecoration(
               border: Border(
                 right: BorderSide(color: borderColor, width: 0.6),
@@ -2013,42 +2591,121 @@ class _ReservationGridState extends State<ReservationGrid> {
                         ),
                       )
                     : const SizedBox.shrink())
-                : SizedBox.expand(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: isCompleted
-                            ? reservationColor.withOpacity(0.4)
-                            : reservationColor,
-                        borderRadius: cardRadius,
-                        boxShadow: showShadow
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 2),
+                : isBlocked
+                    ? (isStart
+                        ? Center(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.lock_outline_rounded,
+                                  size: 12,
+                                  color: isBlockedSelected
+                                      ? theme.colorScheme.error
+                                      : theme.colorScheme.onSurfaceVariant,
                                 ),
-                              ]
-                            : const [],
-                      ),
-                      child: Center(
-                        child: Text(
-                          labelText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            fontWeight:
-                                isCompleted ? FontWeight.w500 : FontWeight.w700,
-                            color: isCompleted
-                                ? labelColor.withOpacity(0.6)
-                                : labelColor,
-                            decoration: isCompleted
-                                ? TextDecoration.lineThrough
-                                : TextDecoration.none,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Kapalı',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: isBlockedSelected
+                                        ? theme.colorScheme.error
+                                        : theme.colorScheme.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : const SizedBox.shrink())
+                    // ── Reserved cell ────────────────────────────────────────
+                    // isStart: draw a card via OverflowBox that spans the full
+                    // merged height so content is vertically centered across
+                    // all merged rows.  Non-isStart rows are transparent and
+                    // show the overflow from the isStart card.
+                    : isStart
+                        ? OverflowBox(
+                            maxHeight: spanCount * ReservationGrid._rowHeight,
+                            alignment: Alignment.topCenter,
+                            child: SizedBox(
+                              height: spanCount * ReservationGrid._rowHeight,
+                              child: Padding(
+                                padding: const EdgeInsets.all(3),
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: isCompleted
+                                        ? reservationColor.withValues(alpha: 0.4)
+                                        : reservationColor,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: showShadow
+                                        ? [
+                                            BoxShadow(
+                                              color: Colors.black
+                                                  .withValues(alpha: 0.08),
+                                              blurRadius: 6,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ]
+                                        : const [],
+                                  ),
+                                  child: Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            displayName,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
+                                            style: theme.textTheme.labelSmall
+                                                ?.copyWith(
+                                              fontWeight: isCompleted
+                                                  ? FontWeight.w500
+                                                  : FontWeight.w700,
+                                              color: isCompleted
+                                                  ? labelColor.withValues(
+                                                      alpha: 0.6)
+                                                  : labelColor,
+                                              decoration: isCompleted
+                                                  ? TextDecoration.lineThrough
+                                                  : TextDecoration.none,
+                                            ),
+                                          ),
+                                          if (reservation.assignedUserName !=
+                                                  null &&
+                                              reservation.assignedUserName!
+                                                  .isNotEmpty)
+                                            Text(
+                                              reservation.assignedUserName!,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              textAlign: TextAlign.center,
+                                              style: theme.textTheme.labelSmall
+                                                  ?.copyWith(
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.w400,
+                                                color: (isCompleted
+                                                        ? labelColor.withValues(
+                                                            alpha: 0.6)
+                                                        : labelColor)
+                                                    .withValues(alpha: 0.75),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
           ),
         ),
       ),
@@ -2112,4 +2769,298 @@ bool _isReservationCompleted(
     }
   }
   return true;
+}
+
+// ─── Notification Bell ────────────────────────────────────────────────────────
+
+class _NotificationBell extends StatefulWidget {
+  const _NotificationBell({required this.userId});
+
+  final String userId;
+
+  @override
+  State<_NotificationBell> createState() => _NotificationBellState();
+}
+
+class _NotificationBellState extends State<_NotificationBell> {
+  late final NotificationService _service;
+  Stream<List<AppNotification>> _unreadStream = const Stream.empty();
+
+  @override
+  void initState() {
+    super.initState();
+    _service = NotificationService();
+    _unreadStream = widget.userId.isNotEmpty
+        ? _service.streamUnread(widget.userId)
+        : const Stream.empty();
+  }
+
+  @override
+  void didUpdateWidget(_NotificationBell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.userId != widget.userId) {
+      setState(() {
+        _unreadStream = widget.userId.isNotEmpty
+            ? _service.streamUnread(widget.userId)
+            : const Stream.empty();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.userId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return StreamBuilder<List<AppNotification>>(
+      stream: _unreadStream,
+      builder: (context, snapshot) {
+        final unreadCount = snapshot.data?.length ?? 0;
+        return IconButton(
+          tooltip: 'Bildirimler',
+          icon: Badge(
+            isLabelVisible: unreadCount > 0,
+            label: Text(
+              unreadCount > 9 ? '9+' : '$unreadCount',
+              style: const TextStyle(fontSize: 10),
+            ),
+            child: const Icon(Icons.notifications_outlined),
+          ),
+          onPressed: () => _showNotificationSheet(context),
+        );
+      },
+    );
+  }
+
+  void _showNotificationSheet(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: _NotificationSheet(userId: widget.userId, service: _service),
+      ),
+    );
+  }
+}
+
+class _NotificationSheet extends StatefulWidget {
+  const _NotificationSheet({required this.userId, required this.service});
+
+  final String userId;
+  final NotificationService service;
+
+  @override
+  State<_NotificationSheet> createState() => _NotificationSheetState();
+}
+
+class _NotificationSheetState extends State<_NotificationSheet> {
+  late final Stream<List<AppNotification>> _allStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _allStream = widget.service.streamAll(widget.userId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final maxHeight = MediaQuery.of(context).size.height * 0.75;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+            child: Row(
+              children: [
+                Text(
+                  'Bildirimler',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: () {
+                    widget.service.markAllRead(widget.userId).ignore();
+                  },
+                  child: const Text('Tümünü okundu yap'),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Kapat',
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Flexible(
+            child: StreamBuilder<List<AppNotification>>(
+              stream: _allStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
+                final notifications = snapshot.data ?? [];
+                if (notifications.isEmpty) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Text('Henüz bildirim yok.'),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  shrinkWrap: true,
+                  itemCount: notifications.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final notif = notifications[index];
+                    final danisanId = (notif.veri?['danisanId'] as String? ?? '').trim();
+                    final kurumkodu = (notif.veri?['kurumkodu'] as String? ?? '').trim();
+                    VoidCallback? onNav;
+                    if (notif.tip == 'yeni_kurum' && kurumkodu.isNotEmpty) {
+                      onNav = () {
+                        Navigator.of(context).pop();
+                        Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => KurumlarPage(initialKurumkodu: kurumkodu),
+                        ));
+                      };
+                    } else if (danisanId.isNotEmpty) {
+                      onNav = () {
+                        Navigator.of(context).pop();
+                        Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => DanisanProfil(id: danisanId),
+                        ));
+                      };
+                    }
+                    return _NotificationItem(
+                      notification: notif,
+                      onTap: () {
+                        if (!notif.okundu) {
+                          widget.service.markRead(widget.userId, notif.id).ignore();
+                        }
+                      },
+                      onNavigate: onNav,
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NotificationItem extends StatelessWidget {
+  const _NotificationItem({
+    required this.notification,
+    required this.onTap,
+    required this.onNavigate,
+  });
+
+  final AppNotification notification;
+  final VoidCallback onTap;
+  /// Bildirime tıklanınca dialog kapatılıp ilgili sayfaya gidilir.
+  final VoidCallback? onNavigate;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final timeStr = _formatNotifTime(notification.tarih);
+    return ListTile(
+      onTap: () {
+        onTap();
+        onNavigate?.call();
+      },
+      tileColor: notification.okundu
+          ? null
+          : theme.colorScheme.primary.withValues(alpha: 0.06),
+      leading: CircleAvatar(
+        radius: 20,
+        backgroundColor: theme.colorScheme.surfaceContainerHighest,
+        child: Icon(
+          _iconForTip(notification.tip),
+          size: 18,
+          color: theme.colorScheme.primary,
+        ),
+      ),
+      title: Text(
+        notification.baslik,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          fontWeight: notification.okundu ? FontWeight.w400 : FontWeight.w700,
+        ),
+      ),
+      subtitle: Text(
+        notification.mesaj,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall,
+      ),
+      trailing: onNavigate != null
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  timeStr,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right_rounded,
+                    size: 18, color: theme.colorScheme.onSurfaceVariant),
+              ],
+            )
+          : Text(
+              timeStr,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+    );
+  }
+
+  IconData _iconForTip(String tip) {
+    switch (tip) {
+      case 'rezervasyon':
+        return Icons.calendar_today_outlined;
+      case 'atama':
+        return Icons.assignment_ind_outlined;
+      case 'yeni_kurum':
+        return Icons.business_outlined;
+      default:
+        return Icons.notifications_outlined;
+    }
+  }
+
+  String _formatNotifTime(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inMinutes < 1) {
+      return 'Şimdi';
+    }
+    if (diff.inHours < 1) {
+      return '${diff.inMinutes}d önce';
+    }
+    if (diff.inDays < 1) {
+      return '${diff.inHours}s önce';
+    }
+    if (diff.inDays < 7) {
+      return '${diff.inDays}g önce';
+    }
+    return '${date.day}.${date.month.toString().padLeft(2, '0')}.${date.year}';
+  }
 }

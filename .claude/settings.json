@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/musabulbul/development/flutter/bin/dart analyze:*)",
+      "Bash(find /Users/musabulbul/development/projects/kurum_takip/lib/widgets -type f -name *.dart)",
+      "Bash(grep -E \"\\\\.\\(json|yaml|yml\\)$\")",
+      "Bash(wc -l /Users/musabulbul/development/projects/kurum_takip/lib/models/*.dart)",
+      "Bash(ls /Users/musabulbul/development/projects/kurum_takip/lib/main*)",
+      "Bash(ls /Users/musabulbul/development/projects/kurum_takip/*.sh)",
+      "Bash(export PATH=\"$PATH:$HOME/flutter/bin\")",
+      "Bash(grep -r \"collection\\(\" /Users/musabulbul/development/projects/kurum_takip/lib/services/*.dart)",
+      "Bash(export PATH=\"$PATH:/Users/musabulbul/development/flutter/bin\")",
+      "Bash(ls lib/main*.dart)",
+      "Bash(find /Users/musabulbul/development/projects/kurum_takip/build/web_booking -name .env -o -name *.env)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=AIzaSyAH--XFabzxkXkBPDAKIIXi29JiRGiw0cs\" -H \"Content-Type: application/json\" -d '{\"\"contents\"\":[{\"\"parts\"\":[{\"\"text\"\":\"\"merhaba\"\"}]}]}')"
+    ]
+  }
+}

@@ -24,6 +24,7 @@ class _MesajlarPageState extends State<MesajlarPage> {
   String? _errorMessage;
 
   String _creditLabel = '-';
+  bool _hasSmsProvider = false;
   final SmsService _smsService = SmsService();
 
   final TextEditingController _reservationSalutationController =
@@ -139,6 +140,7 @@ class _MesajlarPageState extends State<MesajlarPage> {
       final creditValue = data['smsCredit'] ?? data['smsKredi'] ?? data['smsBalance'];
       _creditLabel = creditValue == null ? '-' : creditValue.toString();
       final providerId = (data['smsProviderId'] ?? '').toString().trim();
+      _hasSmsProvider = providerId.isNotEmpty;
       final userInfoResult = await _smsService.fetchUserInformation(
         kurumId: institutionId,
         providerId: providerId.isEmpty ? null : providerId,
@@ -383,6 +385,42 @@ class _MesajlarPageState extends State<MesajlarPage> {
     });
   }
 
+  Widget _buildSmsProviderWarning() {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: cs.errorContainer.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cs.error.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.sms_failed_outlined, size: 18, color: cs.error),
+          const SizedBox(width: 10),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(fontSize: 13, color: cs.onErrorContainer),
+                children: const [
+                  TextSpan(
+                    text: 'SMS sağlayıcınız mevcut değildir. '
+                        'SMS gönderebilmek için temsilcinizle iletişime geçiniz.\n',
+                  ),
+                  TextSpan(
+                    text: 'mebssoftware@gmail.com',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -436,6 +474,10 @@ class _MesajlarPageState extends State<MesajlarPage> {
               : ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
+                    if (!_hasSmsProvider) ...[
+                      _buildSmsProviderWarning(),
+                      const SizedBox(height: 16),
+                    ],
                     Card(
                       child: ListTile(
                         leading: const Icon(Icons.sms_outlined),

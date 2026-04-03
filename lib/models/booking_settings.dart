@@ -1,3 +1,23 @@
+// ─── Banner Görseli ──────────────────────────────────────────────────────────
+
+class BannerImage {
+  final String url;
+  final String caption;
+
+  const BannerImage({required this.url, required this.caption});
+
+  factory BannerImage.fromMap(Map<String, dynamic> map) {
+    return BannerImage(
+      url: (map['url'] as String?) ?? '',
+      caption: (map['caption'] as String?) ?? '',
+    );
+  }
+
+  Map<String, dynamic> toMap() => {'url': url, 'caption': caption};
+}
+
+// ─── Booking Ayarları ─────────────────────────────────────────────────────────
+
 class BookingSettings {
   final bool enabled;
   final int maxDaysAhead;
@@ -11,6 +31,18 @@ class BookingSettings {
   final String? publicInfoText;
   final String? successText;
 
+  // AI Asistan ayarları
+  /// AI asistanın rezervasyon sayfasında görünüp görünmeyeceğini belirler.
+  final bool aiAssistantEnabled;
+  /// Asistana verilecek kuruma özel talimatlar ve ek bilgiler.
+  final String? aiExtraContext;
+
+  /// Randevu sayfasında görüntülenen tanıtım görselleri (en fazla 3).
+  final List<BannerImage> bannerImages;
+
+  /// Danışanın randevu sırasında personel seçip seçemeyeceğini belirler.
+  final bool allowStaffSelection;
+
   const BookingSettings({
     required this.enabled,
     required this.maxDaysAhead,
@@ -23,6 +55,10 @@ class BookingSettings {
     required this.showAccountStatement,
     this.publicInfoText,
     this.successText,
+    this.aiAssistantEnabled = false,
+    this.aiExtraContext,
+    this.bannerImages = const [],
+    this.allowStaffSelection = false,
   });
 
   factory BookingSettings.fromMap(Map<String, dynamic>? map) {
@@ -39,6 +75,13 @@ class BookingSettings {
       showAccountStatement: source['showAccountStatement'] == true,
       publicInfoText: source['publicInfoText'] as String?,
       successText: source['successText'] as String?,
+      aiAssistantEnabled: source['aiAssistantEnabled'] == true,
+      aiExtraContext: source['aiExtraContext'] as String?,
+      bannerImages: ((source['bannerImages'] as List?) ?? [])
+          .whereType<Map>()
+          .map((e) => BannerImage.fromMap(Map<String, dynamic>.from(e)))
+          .toList(),
+      allowStaffSelection: source['allowStaffSelection'] == true,
     );
   }
 
@@ -55,6 +98,10 @@ class BookingSettings {
       'showAccountStatement': showAccountStatement,
       'publicInfoText': publicInfoText,
       'successText': successText,
+      'aiAssistantEnabled': aiAssistantEnabled,
+      'aiExtraContext': aiExtraContext,
+      'bannerImages': bannerImages.map((b) => b.toMap()).toList(),
+      'allowStaffSelection': allowStaffSelection,
     };
   }
 }

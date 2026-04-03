@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:kurum_takip/firebase_options.dart';
-
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 import '../controllers/institution_controller.dart';
@@ -19,158 +18,131 @@ class KullaniciEkle extends StatefulWidget {
 }
 
 class _KullaniciEkleState extends State<KullaniciEkle> {
-  UserController user = Get.find<UserController>();
-  InstitutionController kurum = Get.find<InstitutionController>();
+  final UserController user = Get.find<UserController>();
+  final InstitutionController kurum = Get.find<InstitutionController>();
+
   bool yukleniyor = false;
+  bool _hesapOlustur = false;
+
   final _formAnahtari = GlobalKey<FormState>();
-  late String adi, soyadi, email, sifre;
-  String roldeger = "YÖNETİCİ";
-  String rol = "YÖNETİCİ";
+  late String adi, soyadi;
+  String email = '', sifre = '';
+  String rol = 'ÇALIŞAN';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Kullanıcı Ekle"),
+        title: const Text('Personel Ekle'),
         actions: const [HomeIconButton()],
       ),
       body: ListView(
-        children: <Widget>[
+        children: [
           if (yukleniyor) const LinearProgressIndicator(),
-          const SizedBox(height: 20.0),
+          const SizedBox(height: 20),
           Padding(
-            padding: const EdgeInsets.all(20.0),
+            padding: const EdgeInsets.all(20),
             child: Form(
               key: _formAnahtari,
               child: Column(
-                children: <Widget>[
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   TextFormField(
-                    autocorrect: true,
                     decoration: const InputDecoration(
-                      hintText: "Kullanıcı adını giriniz",
-                      labelText: "Adı:",
-                      errorStyle: TextStyle(fontSize: 16.0),
+                      labelText: 'Adı',
                       prefixIcon: Icon(Icons.person),
+                      border: OutlineInputBorder(),
                     ),
-                    validator: (girilenDeger) {
-                      if (girilenDeger!.isEmpty) {
-                        return "Adı boş bırakılamaz!";
-                      } else if (girilenDeger.trim().length < 2 ||
-                          girilenDeger.trim().length > 30) {
-                        return "En az 2 en fazla 30 karakter olabilir!";
-                      }
+                    textCapitalization: TextCapitalization.words,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) return 'Ad boş bırakılamaz.';
+                      if (v.trim().length < 2) return 'En az 2 karakter olmalı.';
                       return null;
                     },
-                    onSaved: (girilenDeger) => adi = girilenDeger!.toUpperCase(),
+                    onSaved: (v) => adi = v!.trim().toUpperCase(),
                   ),
-                  const SizedBox(height: 10.0),
+                  const SizedBox(height: 12),
                   TextFormField(
-                    autocorrect: true,
                     decoration: const InputDecoration(
-                      hintText: "Kullanıcı soyadını giriniz",
-                      labelText: "Soyadı:",
-                      errorStyle: TextStyle(fontSize: 16.0),
+                      labelText: 'Soyadı',
                       prefixIcon: Icon(Icons.person),
+                      border: OutlineInputBorder(),
                     ),
-                    validator: (girilenDeger) {
-                      if (girilenDeger!.isEmpty) {
-                        return "Soyadı boş bırakılamaz!";
-                      } else if (girilenDeger.trim().length < 2 ||
-                          girilenDeger.trim().length > 30) {
-                        return "En az 2 en fazla 30 karakter olabilir!";
-                      }
+                    textCapitalization: TextCapitalization.words,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) return 'Soyad boş bırakılamaz.';
+                      if (v.trim().length < 2) return 'En az 2 karakter olmalı.';
                       return null;
                     },
-                    onSaved: (girilenDeger) => soyadi = girilenDeger!.toUpperCase(),
+                    onSaved: (v) => soyadi = v!.trim().toUpperCase(),
                   ),
-                  const SizedBox(height: 10.0),
-                  TextFormField(
-                    autocorrect: true,
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: rol,
                     decoration: const InputDecoration(
-                      hintText: "Kullanıcı e-mailini giriniz",
-                      labelText: "E-mail:",
-                      errorStyle: TextStyle(fontSize: 16.0),
-                      prefixIcon: Icon(Icons.email),
+                      labelText: 'Rol',
+                      prefixIcon: Icon(Icons.badge_outlined),
+                      border: OutlineInputBorder(),
                     ),
-                    validator: (girilenDeger) {
-                      if (girilenDeger!.isEmpty) {
-                        return "E-mail boş bırakılamaz!";
-                      } else if (!RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-                          .hasMatch(girilenDeger)) {
-                        return "Geçerli bir e-posta adresi giriniz!";
-                      }
-                      return null;
-                    },
-                    onSaved: (girilenDeger) => email = girilenDeger!,
+                    items: const [
+                      DropdownMenuItem(value: 'YÖNETİCİ', child: Text('YÖNETİCİ')),
+                      DropdownMenuItem(value: 'ÇALIŞAN', child: Text('ÇALIŞAN')),
+                      DropdownMenuItem(value: 'MUHASEBE', child: Text('MUHASEBE')),
+                    ],
+                    onChanged: (v) => setState(() => rol = v!),
                   ),
-                  const SizedBox(height: 10.0),
-                  TextFormField(
-                    autocorrect: true,
-                    decoration: const InputDecoration(
-                      hintText: "Şifre giriniz",
-                      labelText: "Şifre:",
-                      errorStyle: TextStyle(fontSize: 16.0),
-                      prefixIcon: Icon(Icons.lock),
-                    ),
-                    validator: (girilenDeger) {
-                      if (girilenDeger!.isEmpty) {
-                        return "Şifre boş bırakılamaz!";
-                      } else if (girilenDeger.trim().length < 4 ||
-                          girilenDeger.trim().length > 30) {
-                        return "En az 4 en fazla 30 karakter olabilir!";
-                      }
-                      return null;
-                    },
-                    onSaved: (girilenDeger) => sifre = girilenDeger!,
+                  const SizedBox(height: 20),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Giriş hesabı oluştur'),
+                    subtitle: const Text(
+                        'E-posta ve şifre ile uygulama girişi için hesap açar.'),
+                    value: _hesapOlustur,
+                    onChanged: (v) => setState(() => _hesapOlustur = v),
                   ),
-                  const SizedBox(height: 10.0),
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.person),
-                        const Text("    Rol:    ",
-                            style: TextStyle(fontSize: 16.0)),
-                        DropdownButton<String>(
-                          value: roldeger,
-                          icon: const Icon(Icons.arrow_downward),
-                          iconSize: 24,
-                          elevation: 16,
-                          style: const TextStyle(color: Colors.black),
-                          underline: Container(
-                            height: 2,
-                            color: Colors.black,
-                          ),
-                          onChanged: (girilenDeger) {
-                            setState(() {
-                              rol = girilenDeger!;
-                              roldeger = girilenDeger;
-                            });
-                          },
-                          items: <String>['YÖNETİCİ', 'ÇALIŞAN', 'MUHASEBE']
-                              .map<DropdownMenuItem<String>>((String value) {
-                            return DropdownMenuItem<String>(
-                              value: value,
-                              child: Text(value),
-                            );
-                          }).toList(),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 50.0),
-                  Container(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _kullaniciOlustur,
-                      child: const Text(
-                        "Kullanıcı Ekle",
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
+                  if (_hesapOlustur) ...[
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      decoration: const InputDecoration(
+                        labelText: 'E-posta',
+                        prefixIcon: Icon(Icons.email_outlined),
+                        border: OutlineInputBorder(),
                       ),
+                      keyboardType: TextInputType.emailAddress,
+                      validator: _hesapOlustur
+                          ? (v) {
+                              if (v == null || v.trim().isEmpty) return 'E-posta boş bırakılamaz.';
+                              if (!RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+                                  .hasMatch(v)) return 'Geçerli e-posta girin.';
+                              return null;
+                            }
+                          : null,
+                      onSaved: (v) => email = v?.trim().toLowerCase() ?? '',
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      decoration: const InputDecoration(
+                        labelText: 'Şifre',
+                        prefixIcon: Icon(Icons.lock_outlined),
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      validator: _hesapOlustur
+                          ? (v) {
+                              if (v == null || v.trim().isEmpty) return 'Şifre boş bırakılamaz.';
+                              if (v.trim().length < 6) return 'En az 6 karakter olmalı.';
+                              return null;
+                            }
+                          : null,
+                      onSaved: (v) => sifre = v ?? '',
+                    ),
+                  ],
+                  const SizedBox(height: 32),
+                  ElevatedButton(
+                    onPressed: yukleniyor ? null : _kaydet,
+                    child: const Text(
+                      'Kaydet',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -182,105 +154,83 @@ class _KullaniciEkleState extends State<KullaniciEkle> {
     );
   }
 
-  void _kullaniciOlustur() async {
-  var _formState = _formAnahtari.currentState;
+  Future<void> _kaydet() async {
+    final formState = _formAnahtari.currentState;
+    if (formState == null || !formState.validate()) return;
+    formState.save();
 
-  if (_formState!.validate()) {
-    _formState.save();
-    setState(() {
-      yukleniyor = true;
-    });
+    setState(() => yukleniyor = true);
 
     try {
-      // E-posta adresini normalize et
-      email = email.trim().toLowerCase();
-
-      // Kullanıcı var mı kontrolü
-      var docSnapshot = await FirebaseFirestore.instance
-          .collection('kullanicilar')
-          .doc(email)
-          .get();
-
-      if (docSnapshot.exists) {
-        throw "Bu e-posta ile bir kullanıcı zaten kayıtlı.";
-      }
-
-      final dynamic kurumkoduKaynak =
-          kurum.data["kurumkodu"] ?? user.data["kurumkodu"];
-      final String kurumkodu = (kurumkoduKaynak ?? '').toString();
-
+      final kurumkodu = ((kurum.data['kurumkodu'] ?? user.data['kurumkodu']) ?? '').toString();
       if (kurumkodu.isEmpty) {
-        setState(() {
-          yukleniyor = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Kurum bilgisi yüklenemedi. Lütfen tekrar deneyin."),
-          ),
-        );
+        _showError('Kurum bilgisi yüklenemedi.');
         return;
       }
 
-      final localId = await _createFirebaseAuthUser(email, sifre);
+      String uid = '';
+      String docId;
 
-      // Kullanıcı oluşturma
-      await FirebaseFirestore.instance.collection('kullanicilar').doc(email).set({
+      if (_hesapOlustur) {
+        // E-posta ile kayıtlı personel var mı?
+        final existing = await FirebaseFirestore.instance
+            .collection('kullanicilar')
+            .doc(email)
+            .get();
+        if (existing.exists) throw 'Bu e-posta ile kayıtlı bir personel var.';
+
+        uid = await _createFirebaseAuthUser(email, sifre);
+        docId = email;
+      } else {
+        // Hesapsız: auto-generated ID
+        docId = FirebaseFirestore.instance.collection('kullanicilar').doc().id;
+      }
+
+      await FirebaseFirestore.instance.collection('kullanicilar').doc(docId).set({
         'adi': adi,
         'soyadi': soyadi,
         'email': email,
         'rol': rol,
         'siniflar': <String>[],
         'yetkiler': <String>[],
-        "kisaad": "${adi[0]}.${soyadi.toUpperCase()}",
-        "kurumkodu": kurumkodu,
-        "olusturulmazamani": Timestamp.now(),
-        "olusturan": "${user.data["adi"]} ${user.data["soyadi"]}",
-        "uid": localId,
-      });
-
-      // Başarılı işlem mesajı
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("$adi $soyadi başarıyla eklendi."))
-      );
-
-      setState(() {
-        yukleniyor = false;
+        'kisaad': '${adi[0]}.${soyadi.toUpperCase()}',
+        'kurumkodu': kurumkodu,
+        'olusturulmazamani': Timestamp.now(),
+        'olusturan': '${user.data['adi']} ${user.data['soyadi']}',
+        'uid': uid,
+        'durum': 'aktif',
       });
 
       if (!mounted) return;
-      Navigator.of(context).pop(true);
-    } catch (hata) {
-      setState(() {
-        yukleniyor = false;
-      });
-
-      // Hata mesajı
-      String mesaj;
-      if (hata == "Bu e-posta ile bir kullanıcı zaten kayıtlı.") {
-        mesaj = "Bu e-posta adresi zaten kayıtlı.";
-      } else if (hata == 'EMAIL_EXISTS') {
-        mesaj = "Bu e-posta adresi zaten kayıtlı.";
-      } else if (hata == 'WEAK_PASSWORD : Password should be at least 6 characters') {
-        mesaj = "Şifre en az 6 karakter olmalıdır.";
-      } else if (hata is String && hata.contains('WEAK_PASSWORD')) {
-        mesaj = "Şifre en az 6 karakter olmalıdır.";
-      } else {
-        mesaj = "Bir hata oluştu: $hata";
-        print(mesaj);
-      }
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(mesaj)),
+        SnackBar(content: Text('$adi $soyadi başarıyla eklendi.')),
       );
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      _showError(_parseError(e));
+    } finally {
+      if (mounted) setState(() => yukleniyor = false);
     }
   }
-}
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  String _parseError(dynamic e) {
+    final s = e.toString();
+    if (s.contains('EMAIL_EXISTS') || s.contains('e-posta ile kayıtlı')) {
+      return 'Bu e-posta adresi zaten kayıtlı.';
+    }
+    if (s.contains('WEAK_PASSWORD')) return 'Şifre en az 6 karakter olmalıdır.';
+    return 'Bir hata oluştu: $s';
+  }
 
   Future<String> _createFirebaseAuthUser(String email, String password) async {
     final apiKey = DefaultFirebaseOptions.currentPlatform.apiKey;
     final uri = Uri.parse(
         'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$apiKey');
-
     final response = await http.post(
       uri,
       headers: {'Content-Type': 'application/json'},
@@ -290,15 +240,11 @@ class _KullaniciEkleState extends State<KullaniciEkle> {
         'returnSecureToken': true,
       }),
     );
-
     if (response.statusCode != 200) {
-      final Map<String, dynamic> body = jsonDecode(response.body);
-      final errorMessage = body['error']?['message'] ?? 'Bilinmeyen hata';
-      throw errorMessage;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      throw body['error']?['message'] ?? 'Bilinmeyen hata';
     }
-
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     return decoded['localId'] as String;
   }
-
 }

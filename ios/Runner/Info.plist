@@ -41,6 +41,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
@@ -51,5 +56,11 @@
 	<string>Danışan fotoğraflarını galeriden seçip uygulamaya yüklemek için fotoğraf kitaplığı erişimi gerekir.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>İndirilen görselleri cihazınıza kaydetmek için fotoğraf kitaplığına yazma izni gerekir.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Telefon rehberindeki kişileri danışan olarak uygulamaya aktarmak için rehber erişimi gerekir.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Sesli komutlarla arama ve not ekleme özelliği için konuşma tanıma erişimi gerekir.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sesli komutlarla arama ve not ekleme özelliği için mikrofon erişimi gerekir.</string>
 </dict>
 </plist>

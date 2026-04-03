@@ -8,6 +8,7 @@ class CustomerProfile {
   final DateTime? birthDate;
   final String? gender;
   final String? address;
+  final double bakiye;
 
   const CustomerProfile({
     required this.id,
@@ -17,6 +18,7 @@ class CustomerProfile {
     this.birthDate,
     this.gender,
     this.address,
+    this.bakiye = 0,
   });
 
   factory CustomerProfile.fromMap(String id, Map<String, dynamic> map) {
@@ -28,6 +30,7 @@ class CustomerProfile {
       birthDate: _toDate(map['birthDate']),
       gender: map['gender'] as String?,
       address: map['address'] as String?,
+      bakiye: (map['bakiye'] as num?)?.toDouble() ?? 0,
     );
   }
 

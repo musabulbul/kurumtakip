@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controllers/institution_controller.dart';
+import '../../controllers/user_controller.dart';
+import '../../utils/export_utils.dart';
 
 class DanisanHesaplariPage extends StatefulWidget {
   const DanisanHesaplariPage({super.key});
@@ -27,8 +29,10 @@ class _DanisanHesaplariPageState extends State<DanisanHesaplariPage> {
   static const String _packageFilterInactive = 'Aktif Paket Yok';
 
   final InstitutionController _institution = Get.find<InstitutionController>();
+  final UserController _user = Get.find<UserController>();
 
   String _selectedAccountSort = _accountSortBalance;
+  List<_StudentAccountEntry> _cachedAccounts = [];
   String _selectedPackageFilter = _allFilter;
 
   @override
@@ -53,9 +57,24 @@ class _DanisanHesaplariPageState extends State<DanisanHesaplariPage> {
         ? _selectedPackageFilter
         : _allFilter;
 
+    final isAdmin = (_user.data['rol'] ?? '').toString() == 'YÖNETİCİ';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Danışan Hesapları'),
+        actions: [
+          if (isAdmin) ...[
+            IconButton(
+              tooltip: 'Excel İndir',
+              icon: const Icon(Icons.table_chart_outlined),
+              onPressed: () => _exportExcel(context),
+            ),
+            IconButton(
+              tooltip: 'PDF İndir',
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              onPressed: () => _exportPdf(context),
+            ),
+          ],
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -183,6 +202,7 @@ class _DanisanHesaplariPageState extends State<DanisanHesaplariPage> {
                         0,
                         (sum, entry) => sum + entry.balance,
                       );
+                      _cachedAccounts = accounts;
 
                       return Column(
                         children: [
@@ -454,6 +474,40 @@ class _DanisanHesaplariPageState extends State<DanisanHesaplariPage> {
       return price.toStringAsFixed(0);
     }
     return price.toStringAsFixed(2);
+  }
+
+  void _exportExcel(BuildContext context) {
+    ExportUtils.shareExcel(
+      context: context,
+      fileBaseName: 'danisan_hesaplari',
+      headers: const ['Danışan', 'Bakiye (TL)', 'Borç (TL)', 'Ödeme (TL)', 'Seans'],
+      rows: _cachedAccounts
+          .map((e) => [
+                e.name,
+                _formatPrice(e.balance),
+                _formatPrice(e.debt),
+                _formatPrice(e.payments),
+                e.sessionLabel.isNotEmpty ? e.sessionLabel : '-',
+              ])
+          .toList(),
+    );
+  }
+
+  void _exportPdf(BuildContext context) {
+    ExportUtils.sharePdf(
+      context: context,
+      title: 'Danışan Hesapları',
+      headers: const ['Danışan', 'Bakiye', 'Borç', 'Ödeme', 'Seans'],
+      rows: _cachedAccounts
+          .map((e) => [
+                e.name,
+                '${_formatPrice(e.balance)} TL',
+                '${_formatPrice(e.debt)} TL',
+                '${_formatPrice(e.payments)} TL',
+                e.sessionLabel.isNotEmpty ? e.sessionLabel : '-',
+              ])
+          .toList(),
+    );
   }
 }
 

@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kurum Takip – Kullanıcı Kılavuzu</title>
+  <style>
+    :root {
+      --red: #e53935;
+      --red-dark: #b71c1c;
+      --red-light: #ffebee;
+      --gray-100: #f5f5f5;
+      --gray-200: #eeeeee;
+      --gray-400: #bdbdbd;
+      --gray-600: #757575;
+      --gray-800: #424242;
+      --gray-900: #212121;
+      --sidebar-w: 260px;
+      --header-h: 56px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      color: var(--gray-900);
+      background: #fff;
+    }
+
+    /* ── HEADER ── */
+    header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--header-h);
+      background: var(--red);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      z-index: 100;
+      box-shadow: 0 2px 6px rgba(0,0,0,.2);
+      gap: 14px;
+    }
+    header .logo { font-size: 20px; font-weight: 700; letter-spacing: -.3px; }
+    header .sub  { font-size: 13px; opacity: .85; }
+    #menu-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 22px;
+      cursor: pointer;
+      margin-right: 4px;
+    }
+
+    /* ── LAYOUT ── */
+    .layout {
+      display: flex;
+      margin-top: var(--header-h);
+      min-height: calc(100vh - var(--header-h));
+    }
+
+    /* ── SIDEBAR ── */
+    aside {
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      background: var(--gray-100);
+      border-right: 1px solid var(--gray-200);
+      position: fixed;
+      top: var(--header-h);
+      bottom: 0;
+      overflow-y: auto;
+      padding: 12px 0 40px;
+      transition: transform .25s ease;
+    }
+    aside .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: var(--gray-600);
+      padding: 16px 18px 4px;
+    }
+    aside a {
+      display: block;
+      padding: 8px 18px 8px 22px;
+      text-decoration: none;
+      color: var(--gray-800);
+      font-size: 14px;
+      border-left: 3px solid transparent;
+      transition: background .15s, border-color .15s;
+    }
+    aside a:hover  { background: var(--gray-200); }
+    aside a.active { background: var(--red-light); border-left-color: var(--red); color: var(--red-dark); font-weight: 600; }
+
+    /* ── MAIN CONTENT ── */
+    main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 40px 48px 80px;
+      max-width: 860px;
+    }
+
+    /* sections */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; color: var(--gray-900); }
+    .page-subtitle { color: var(--gray-600); margin-bottom: 32px; font-size: 15px; }
+    h2 { font-size: 19px; font-weight: 600; margin: 36px 0 12px; color: var(--gray-900); border-bottom: 2px solid var(--gray-200); padding-bottom: 6px; }
+    h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; color: var(--gray-800); }
+    p  { line-height: 1.7; color: var(--gray-800); margin-bottom: 10px; }
+    ul, ol { padding-left: 22px; margin-bottom: 12px; }
+    li { line-height: 1.8; color: var(--gray-800); }
+    strong { color: var(--gray-900); }
+
+    /* steps */
+    .steps { counter-reset: step; margin: 16px 0; }
+    .step {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 14px;
+      align-items: flex-start;
+    }
+    .step-num {
+      counter-increment: step;
+      flex-shrink: 0;
+      width: 28px; height: 28px;
+      background: var(--red);
+      color: #fff;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+    }
+    .step-body { flex: 1; padding-top: 4px; }
+    .step-body strong { display: block; margin-bottom: 2px; }
+
+    /* callout boxes */
+    .tip, .warning, .info {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin: 16px 0;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .tip     { background: #e8f5e9; border-left: 4px solid #43a047; }
+    .warning { background: #fff8e1; border-left: 4px solid #ffa000; }
+    .info    { background: #e3f2fd; border-left: 4px solid #1e88e5; }
+    .tip::before     { content: "✅ "; font-weight: 700; }
+    .warning::before { content: "⚠️ "; font-weight: 700; }
+    .info::before    { content: "ℹ️ "; font-weight: 700; }
+
+    /* badge */
+    .badge {
+      display: inline-block;
+      background: var(--red);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .badge.green  { background: #43a047; }
+    .badge.orange { background: #ffa000; }
+    .badge.blue   { background: #1e88e5; }
+
+    /* card grid */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+      margin: 20px 0;
+    }
+    .card {
+      background: var(--gray-100);
+      border: 1px solid var(--gray-200);
+      border-radius: 8px;
+      padding: 18px 16px;
+      cursor: pointer;
+      transition: box-shadow .15s, border-color .15s;
+      text-decoration: none;
+      color: inherit;
+    }
+    .card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.1); border-color: var(--red); }
+    .card .card-icon { font-size: 26px; margin-bottom: 8px; }
+    .card .card-title { font-weight: 600; font-size: 14px; }
+    .card .card-desc  { font-size: 13px; color: var(--gray-600); margin-top: 4px; }
+
+    /* table */
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14px; }
+    th { background: var(--gray-100); text-align: left; padding: 8px 12px; font-weight: 600; border: 1px solid var(--gray-200); }
+    td { padding: 8px 12px; border: 1px solid var(--gray-200); vertical-align: top; }
+    tr:nth-child(even) td { background: var(--gray-100); }
+
+    /* divider */
+    hr { border: none; border-top: 1px solid var(--gray-200); margin: 32px 0; }
+
+    /* responsive */
+    @media (max-width: 768px) {
+      #menu-toggle { display: block; }
+      aside {
+        transform: translateX(-100%);
+        z-index: 90;
+        width: 80%;
+        max-width: 280px;
+      }
+      aside.open { transform: translateX(0); }
+      main { margin-left: 0; padding: 24px 20px 60px; }
+      .card-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* overlay */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.35);
+      z-index: 89;
+    }
+    #overlay.show { display: block; }
+  </style>
+</head>
+<body>
+
+<header>
+  <button id="menu-toggle" onclick="toggleMenu()">☰</button>
+  <span class="logo">Kurum Takip</span>
+  <span class="sub">Kullanıcı Kılavuzu</span>
+</header>
+
+<div id="overlay" onclick="closeMenu()"></div>
+
+<div class="layout">
+
+  <!-- ── SIDEBAR ── -->
+  <aside id="sidebar">
+    <div class="section-label">Başlangıç</div>
+    <a href="#" onclick="showSection('giris')">🔐 Giriş Yapma</a>
+
+    <div class="section-label">Temel İşlemler</div>
+    <a href="#" onclick="showSection('arama')">🔍 Ana Ekran & Arama</a>
+    <a href="#" onclick="showSection('danisan')">👤 Danışan Yönetimi</a>
+    <a href="#" onclick="showSection('randevu')">📅 Randevular</a>
+    <a href="#" onclick="showSection('odeme')">💳 Ödemeler & Paketler</a>
+
+    <div class="section-label">Yönetici</div>
+    <a href="#" onclick="showSection('raporlar')">📊 Raporlar</a>
+    <a href="#" onclick="showSection('ayarlar')">⚙️ Ayarlar</a>
+    <a href="#" onclick="showSection('kullanicilar')">👥 Kullanıcı Yönetimi</a>
+    <a href="#" onclick="showSection('online')">🌐 Online Rezervasyon</a>
+    <a href="#" onclick="showSection('stok')">📦 Stok Takibi</a>
+  </aside>
+
+  <!-- ── MAIN ── -->
+  <main>
+
+    <!-- HOME (default) -->
+    <div class="section active" id="sec-home">
+      <h1>Kurum Takip Kılavuzu</h1>
+      <p class="page-subtitle">Uygulamanın tüm özelliklerini buradan öğrenebilirsiniz.</p>
+      <div class="card-grid">
+        <a class="card" href="#" onclick="showSection('giris')">
+          <div class="card-icon">🔐</div>
+          <div class="card-title">Giriş Yapma</div>
+          <div class="card-desc">Hesabınıza nasıl giriş yapacağınız</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('arama')">
+          <div class="card-icon">🔍</div>
+          <div class="card-title">Ana Ekran & Arama</div>
+          <div class="card-desc">Danışan arama ve takvim kullanımı</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('danisan')">
+          <div class="card-icon">👤</div>
+          <div class="card-title">Danışan Yönetimi</div>
+          <div class="card-desc">Danışan ekleme, düzenleme, profil</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('randevu')">
+          <div class="card-icon">📅</div>
+          <div class="card-title">Randevular</div>
+          <div class="card-desc">Randevu oluşturma ve yönetimi</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('odeme')">
+          <div class="card-icon">💳</div>
+          <div class="card-title">Ödemeler & Paketler</div>
+          <div class="card-desc">Ödeme alma, paket satışı</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('raporlar')">
+          <div class="card-icon">📊</div>
+          <div class="card-title">Raporlar</div>
+          <div class="card-desc">Gelir, gider, işlem raporları</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('ayarlar')">
+          <div class="card-icon">⚙️</div>
+          <div class="card-title">Ayarlar</div>
+          <div class="card-desc">Mekan, saat, hizmet tanımları</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('kullanicilar')">
+          <div class="card-icon">👥</div>
+          <div class="card-title">Kullanıcı Yönetimi</div>
+          <div class="card-desc">Çalışan ekleme ve yetkilendirme</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('online')">
+          <div class="card-icon">🌐</div>
+          <div class="card-title">Online Rezervasyon</div>
+          <div class="card-desc">Müşteri randevu portalı</div>
+        </a>
+        <a class="card" href="#" onclick="showSection('stok')">
+          <div class="card-icon">📦</div>
+          <div class="card-title">Stok Takibi</div>
+          <div class="card-desc">Ürün ve stok yönetimi</div>
+        </a>
+      </div>
+    </div>
+
+    <!-- ── GİRİŞ ── -->
+    <div class="section" id="sec-giris">
+      <h1>🔐 Giriş Yapma</h1>
+      <p class="page-subtitle">Uygulamaya giriş ve oturum yönetimi</p>
+
+      <h2>Uygulamaya Giriş</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>E-posta ve şifrenizi girin</strong>Yönetici tarafından oluşturulan hesap bilgilerinizi kullanın.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>"Beni Hatırla" seçeneğini işaretleyin</strong>Bir sonraki açılışta otomatik giriş yapılır.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Giriş Yap butonuna basın</strong>Başarılı girişin ardından ana ekrana yönlendirilirsiniz.</div></div>
+      </div>
+
+      <div class="warning">Şifrenizi unuttuysanız yönetici ile iletişime geçin. Firebase üzerinden şifre sıfırlama yapılabilir.</div>
+
+      <h2>Şifre Değiştirme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Sol üstteki menü (☰) ikonuna dokunun</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>"Şifre Değiştir" seçeneğine tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Mevcut şifrenizi ve yeni şifrenizi girin</strong></div></div>
+      </div>
+
+      <h2>Çıkış Yapma</h2>
+      <p>Menü → <strong>Çıkış Yap</strong> seçeneğini kullanın. Uygulamayı tamamen kapatmak için <strong>Kapat</strong> seçeneğini kullanabilirsiniz.</p>
+    </div>
+
+    <!-- ── ANA EKRAN & ARAMA ── -->
+    <div class="section" id="sec-arama">
+      <h1>🔍 Ana Ekran & Arama</h1>
+      <p class="page-subtitle">Danışan arama, takvim ve mekan yönetimi</p>
+
+      <h2>Ekran Yapısı</h2>
+      <p>Ana ekran üç ana bölümden oluşur:</p>
+      <ul>
+        <li><strong>Üst kısım:</strong> Tarih seçici ve takvim</li>
+        <li><strong>Orta kısım:</strong> Mekan sekmeleri ve saat dilimleri</li>
+        <li><strong>Alt kısım:</strong> Danışan arama çubuğu</li>
+      </ul>
+
+      <h2>Danışan Arama</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Arama çubuğuna danışan adını veya telefonunu yazın</strong>Türkçe karakter farkı gözetmeksizin arama yapabilirsiniz (örn. "sahin" yazarak "Şahin"i bulabilirsiniz).</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Listeden danışanı seçin</strong>Danışanın profil sayfasına geçiş yapılır.</div></div>
+      </div>
+
+      <div class="tip">Arama yaparken ad, soyad veya telefon numarasının bir kısmını yazmanız yeterlidir.</div>
+
+      <h2>Tarih Seçimi</h2>
+      <p>Ekranın üst kısmındaki tarih seçicide ileri/geri ok butonlarıyla gün değiştirebilirsiniz. Tarihe tıklayarak takvimden doğrudan seçim yapılabilir.</p>
+
+      <h2>Mekan Sekmeleri</h2>
+      <p>Birden fazla mekanınız varsa her mekan ayrı bir sekme olarak görünür. Sekmeye tıklayarak o mekana ait müsait saatleri ve rezervasyonları görürsünüz.</p>
+
+      <h2>Saat Dilimlerinden Randevu Oluşturma</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Bir mekan sekmesi seçin</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Müsait saat dilimine uzun basın veya tıklayın</strong>Birden fazla saat seçmek için arka arkaya tıklayabilirsiniz.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Danışan arama kutusundan danışanı seçin</strong>Seçim sonrası randevu oluşturma ekranı açılır.</div></div>
+      </div>
+
+      <h2>Sol Menü</h2>
+      <p>Sol üstteki ☰ ikonuyla menüye erişebilirsiniz:</p>
+      <table>
+        <tr><th>Menü Öğesi</th><th>Açıklama</th><th>Yetki</th></tr>
+        <tr><td>Kullanıcılar</td><td>Çalışanları görüntüle ve yönet</td><td><span class="badge">YÖNETİCİ</span></td></tr>
+        <tr><td>Ayarlar</td><td>Kurum ayarlarına erişim</td><td><span class="badge">YÖNETİCİ</span></td></tr>
+        <tr><td>Şifre Değiştir</td><td>Kişisel şifre güncellemesi</td><td>Tüm roller</td></tr>
+        <tr><td>Yardım</td><td>Bu kılavuz</td><td>Tüm roller</td></tr>
+        <tr><td>Çıkış Yap</td><td>Oturumu kapat</td><td>Tüm roller</td></tr>
+      </table>
+    </div>
+
+    <!-- ── DANIŞAN YÖNETİMİ ── -->
+    <div class="section" id="sec-danisan">
+      <h1>👤 Danışan Yönetimi</h1>
+      <p class="page-subtitle">Danışan ekleme, düzenleme ve profil yönetimi</p>
+
+      <h2>Yeni Danışan Ekleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ana ekranda sağ alt köşedeki + butonuna basın</strong>veya arama çubuğuna yazarken "Yeni danışan ekle" seçeneğine tıklayın.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Zorunlu alanları doldurun</strong>Ad ve soyad girilmesi zorunludur.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>İsteğe bağlı bilgileri ekleyin</strong>Telefon, doğum tarihi, cinsiyet, adres.</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Kaydet butonuna basın</strong></div></div>
+      </div>
+
+      <div class="tip">Telefon numarası girerken başında 0 olmadan yazın (örn. 5321234567).</div>
+
+      <h2>Danışan Profili</h2>
+      <p>Danışan profilinde şu bilgilere ve işlemlere erişebilirsiniz:</p>
+
+      <h3>Genel Bilgiler</h3>
+      <ul>
+        <li>Ad, soyad, telefon, e-posta, doğum tarihi, cinsiyet, adres</li>
+        <li>Sağ üst köşedeki kalem ikonuyla bilgileri düzenleyebilirsiniz</li>
+      </ul>
+
+      <h3>Rezervasyonlar Sekmesi</h3>
+      <ul>
+        <li>Danışana ait tüm geçmiş ve gelecek rezervasyonlar listelenir</li>
+        <li>Her rezervasyona tıklayarak detayları görebilir, düzenleyebilirsiniz</li>
+      </ul>
+
+      <h3>Ödemeler Sekmesi</h3>
+      <ul>
+        <li>Danışanın tüm ödemeleri ve hesap ekstresi</li>
+        <li>Bakiye durumu (borçlu/alacaklı)</li>
+      </ul>
+
+      <h3>Paketler Sekmesi</h3>
+      <ul>
+        <li>Satın alınan paketler ve kalan seans sayıları</li>
+      </ul>
+
+      <h3>Fotoğraflar Sekmesi</h3>
+      <ul>
+        <li>Danışana ait fotoğrafları görüntüleyin ve yükleyin</li>
+      </ul>
+
+      <h2>Danışan Bilgilerini Düzenleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profilini açın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Sağ üstteki düzenleme ikonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Bilgileri güncelleyip kaydedin</strong></div></div>
+      </div>
+
+      <h2>Fotoğraf Yükleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profili → Fotoğraflar sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>+ butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Galeriden veya kameradan fotoğraf seçin</strong></div></div>
+      </div>
+
+      <div class="info">Fotoğraflar Firebase Storage'da güvenli şekilde saklanır ve yalnızca yetkilendirilmiş kullanıcılar görebilir.</div>
+
+      <h2>Gelişmiş Arama</h2>
+      <p>Ana ekranda filtre ikonuna tıklayarak gelişmiş arama ekranına geçebilirsiniz. Buradan cinsiyet, paket durumu ve diğer kriterlere göre filtreleme yapılabilir.</p>
+    </div>
+
+    <!-- ── RANDEVULAR ── -->
+    <div class="section" id="sec-randevu">
+      <h1>📅 Randevular</h1>
+      <p class="page-subtitle">Randevu oluşturma, düzenleme ve takibi</p>
+
+      <h2>Randevu Oluşturma (Takvimden)</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ana ekranda istediğiniz tarihe gidin</strong>Tarih seçicide ok butonlarıyla veya takvime tıklayarak tarih seçin.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Mekan sekmesini seçin</strong>Randevunun yapılacağı mekana ait sekmeye geçin.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Müsait saat dilimine tıklayın</strong>Birden fazla saat seçmek için arka arkaya tıklayın.</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Arama kutusundan danışanı seçin</strong>İsim veya telefon ile arama yapın.</div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Hizmeti ve notları girin, kaydedin</strong></div></div>
+      </div>
+
+      <h2>Randevu Oluşturma (Danışan Profilinden)</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profilini açın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Rezervasyonlar sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>+ butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Tarih, saat, mekan ve hizmet seçin</strong></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Kaydedin</strong></div></div>
+      </div>
+
+      <h2>Randevu Düzenleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profili → Rezervasyonlar sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>İlgili randevuya tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Düzenle butonuna basın, değişiklik yapın ve kaydedin</strong></div></div>
+      </div>
+
+      <h2>Randevu İptali</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>İlgili randevuyu açın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>İptal / Sil seçeneğine tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Onay ekranında işlemi onaylayın</strong></div></div>
+      </div>
+
+      <div class="warning">İptal edilen randevuya ait ödeme kaydı varsa ayrıca incelemeniz gerekebilir.</div>
+
+      <h2>Randevu Notları</h2>
+      <p>Her randevuya serbest metin olarak not eklenebilir. Bu notlar yalnızca yetkili kullanıcılar tarafından görülebilir.</p>
+
+      <h2>Çakışma Kontrolü</h2>
+      <p>Sistem aynı mekan ve saate ait çakışan randevularda uyarı verir. Müsait saatler takvimde farklı renkte gösterilir.</p>
+    </div>
+
+    <!-- ── ÖDEMELER & PAKETLER ── -->
+    <div class="section" id="sec-odeme">
+      <h1>💳 Ödemeler & Paketler</h1>
+      <p class="page-subtitle">Ödeme alma, paket satışı ve hesap yönetimi</p>
+
+      <h2>Ödeme Alma</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profilini açın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Ödemeler sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>+ butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Tutar, ödeme türü ve tarihi girin</strong>Nakit, kredi kartı veya havale seçeneklerinden birini seçin.</div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Kaydedin</strong></div></div>
+      </div>
+
+      <h2>Hesap Ekstresi</h2>
+      <p>Danışan profili → Ödemeler sekmesinde tüm işlemler ve güncel bakiye görüntülenir.</p>
+      <ul>
+        <li><strong>Borçlu:</strong> Danışanın ödemesi gereken tutar var</li>
+        <li><strong>Alacaklı:</strong> Danışanın fazla ödeme yaptığı durum (avans)</li>
+      </ul>
+
+      <h2>Paket Satışı</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Danışan profili → Paketler sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>+ butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Satılacak paketi seçin</strong>Önceden Ayarlar → Paketler bölümünden tanımlanmış paketler listelenir.</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Ödeme bilgilerini girin ve kaydedin</strong></div></div>
+      </div>
+
+      <h2>Paket Seansı Düşme</h2>
+      <p>Randevu oluşturulurken danışanın aktif paketi varsa seans sayısı otomatik düşürülebilir. Bu ayar randevu formunda seçilebilir.</p>
+
+      <div class="tip">Paket satmadan önce Ayarlar → Paketler bölümünden paketlerin tanımlı olduğundan emin olun.</div>
+
+      <h2>Ödeme Silme</h2>
+      <div class="warning">Ödeme kayıtları silindiğinde bakiye durumu değişir. Silmeden önce emin olun.</div>
+      <p>İlgili ödeme kaydına uzun basın veya sil ikonuna tıklayın.</p>
+    </div>
+
+    <!-- ── RAPORLAR ── -->
+    <div class="section" id="sec-raporlar">
+      <h1>📊 Raporlar</h1>
+      <p class="page-subtitle">İşlem, gelir ve gider raporları <span class="badge">YÖNETİCİ</span></p>
+
+      <div class="info">Raporlar bölümüne yalnızca YÖNETİCİ rolündeki kullanıcılar erişebilir.</div>
+
+      <h2>Raporlar Menüsüne Erişim</h2>
+      <p>Ana ekran → Alt navigasyon → <strong>Raporlar</strong> ikonuna tıklayın.</p>
+
+      <h2>İşlem Raporu</h2>
+      <p>Belirli bir tarih aralığında gerçekleştirilen tüm hizmet işlemlerini listeler.</p>
+      <ul>
+        <li>Tarih aralığı filtreleyebilirsiniz</li>
+        <li>Mekana veya hizmete göre filtreleme yapılabilir</li>
+        <li>Çalışan bazında görüntüleme mümkündür</li>
+        <li>Excel'e aktarım yapılabilir</li>
+      </ul>
+
+      <h2>Gelir Raporu (Ödemeler)</h2>
+      <p>Seçilen dönemde alınan tüm ödemeleri gösterir.</p>
+      <ul>
+        <li>Nakit / Kart / Havale kırılımı</li>
+        <li>Dönem toplamları</li>
+        <li>Danışan bazında detay</li>
+      </ul>
+
+      <h2>Gider Raporu</h2>
+      <p>Kurumun giderlerini takip etmek için kullanılır. Gider eklemek ve listelemek bu bölümden yapılır.</p>
+
+      <h2>Danışan Hesapları</h2>
+      <p>Tüm danışanların bakiye durumunu tek ekranda görüntüler. Borçlu danışanlar kırmızı, alacaklı danışanlar yeşil renkte gösterilir.</p>
+
+      <h2>Excel'e Aktarım</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>İlgili rapor ekranını açın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Sağ üstteki paylaş / indir ikonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Excel dosyası oluşturulur ve paylaşım menüsü açılır</strong></div></div>
+      </div>
+    </div>
+
+    <!-- ── AYARLAR ── -->
+    <div class="section" id="sec-ayarlar">
+      <h1>⚙️ Ayarlar</h1>
+      <p class="page-subtitle">Kurum ayarları ve tanımlamalar <span class="badge">YÖNETİCİ</span></p>
+
+      <div class="info">Ayarlar bölümüne yalnızca YÖNETİCİ rolündeki kullanıcılar erişebilir. Menü → Ayarlar yolu ile ulaşılır.</div>
+
+      <h2>Mekanlar</h2>
+      <p>Hizmet verilen fiziksel alanları (oda, koltuk, masa vb.) tanımlayın.</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ayarlar → Mekanlar</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>+ butonuyla yeni mekan ekleyin</strong>İsim ve gerekiyorsa açıklama girin.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Kaydedin</strong>Mekan ana ekranda sekme olarak görünür.</div></div>
+      </div>
+      <div class="tip">Mekan silmeden önce o mekana ait tüm geçmiş randevuların tamamlandığından emin olun.</div>
+
+      <h2>Çalışma Saatleri</h2>
+      <p>Her gün için başlangıç ve bitiş saatlerini tanımlayın.</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ayarlar → Çalışma Saatleri</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Her gün için başlangıç/bitiş saatini ayarlayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Kapalı günler için "Kapalı" seçeneğini işaretleyin</strong></div></div>
+      </div>
+
+      <h2>Hizmetler (İşlemler)</h2>
+      <p>Kurumunuzun sunduğu hizmetleri tanımlayın.</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ayarlar → İşlemler / Hizmetler</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>+ butonuyla yeni hizmet ekleyin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Hizmet adı, süresi ve fiyatını girin</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Kategoriye atayın (isteğe bağlı)</strong></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Kaydedin</strong></div></div>
+      </div>
+
+      <h3>Hizmet Kategorileri</h3>
+      <p>Hizmetleri gruplamak için kategoriler oluşturabilirsiniz. Kategori listesi Ayarlar → Hizmet Kategorileri bölümünden yönetilir.</p>
+
+      <h2>Paketler</h2>
+      <p>Birden fazla seans içeren hizmet paketleri tanımlayın.</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Ayarlar → Paketler</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>+ butonuyla yeni paket ekleyin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Paket adı, içerdiği hizmet, seans sayısı ve fiyatını girin</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Kaydedin</strong></div></div>
+      </div>
+
+      <h2>SMS Ayarları</h2>
+      <p>Danışanlara otomatik SMS bildirimi göndermek için SMS sağlayıcı bilgilerini girin.</p>
+      <div class="info">SMS gönderimi için harici bir SMS sağlayıcısı sözleşmesi gereklidir. Sağlayıcı bilgileri Menü → SMS Sağlayıcılar bölümünden girilir.</div>
+
+      <h2>Online Rezervasyon Ayarları</h2>
+      <p>Müşteri rezervasyon portalınızın davranışını buradan yapılandırın. Detaylar için <a href="#" onclick="showSection('online')">Online Rezervasyon</a> bölümüne bakın.</p>
+    </div>
+
+    <!-- ── KULLANICI YÖNETİMİ ── -->
+    <div class="section" id="sec-kullanicilar">
+      <h1>👥 Kullanıcı Yönetimi</h1>
+      <p class="page-subtitle">Çalışan hesapları ve rol yönetimi <span class="badge">YÖNETİCİ</span></p>
+
+      <h2>Kullanıcı Rolleri</h2>
+      <table>
+        <tr><th>Rol</th><th>Açıklama</th></tr>
+        <tr><td><strong>YÖNETİCİ</strong></td><td>Tüm özellikler; ayarlar, raporlar, kullanıcı yönetimi dahil tam erişim</td></tr>
+        <tr><td><strong>ÇALIŞAN</strong></td><td>Danışan yönetimi, randevu ve ödeme işlemleri; ayarlara erişim yok</td></tr>
+        <tr><td><strong>MUHASEBE</strong></td><td>Finansal raporlar ve ödeme işlemleri; ayarlara erişim yok</td></tr>
+      </table>
+
+      <h2>Yeni Kullanıcı Ekleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Menü → Kullanıcılar</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Sağ alttaki + butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Ad, soyad, e-posta ve şifre girin</strong>E-posta adresi giriş için kullanılır; benzersiz olmalıdır.</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Rolü seçin</strong></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Kaydedin</strong>Kullanıcı girdiğiniz bilgilerle giriş yapabilir.</div></div>
+      </div>
+
+      <div class="tip">Şifreyi kullanıcıyla paylaştıktan sonra kullanıcı Menü → Şifre Değiştir bölümünden kendi şifresini güncelleyebilir.</div>
+
+      <h2>Kullanıcı Yetkilerini Düzenleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Menü → Kullanıcılar → İlgili kullanıcıya tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Kullanıcı profilinde yetkiler bölümüne gidin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>İzin anahtarlarını açın/kapatın</strong></div></div>
+      </div>
+
+      <h2>Özel Yetkiler</h2>
+      <p>Rol dışında bireysel izinler atanabilir:</p>
+      <table>
+        <tr><th>İzin</th><th>Açıklama</th></tr>
+        <tr><td>Fiyat Görüntüleme</td><td>Hizmet fiyatlarını görebilir</td></tr>
+        <tr><td>Fiyat Güncelleme</td><td>Hizmet fiyatlarını değiştirebilir</td></tr>
+        <tr><td>Randevu Oluşturma</td><td>Yeni randevu ekleyebilir</td></tr>
+        <tr><td>Ödeme Alma</td><td>Ödeme kaydı oluşturabilir</td></tr>
+        <tr><td>İletişim Bilgisi Görme</td><td>Danışan telefon/e-posta görüntülenir</td></tr>
+        <tr><td>Danışan Güncelleme</td><td>Danışan bilgilerini düzenleyebilir</td></tr>
+      </table>
+
+      <h2>Kullanıcı Silme / Pasif Yapma</h2>
+      <div class="warning">Kullanıcı silindiğinde o kullanıcıya ait geçmiş işlem kayıtları etkilenmez fakat kullanıcı bir daha giriş yapamaz.</div>
+    </div>
+
+    <!-- ── ONLİNE REZERVASYON ── -->
+    <div class="section" id="sec-online">
+      <h1>🌐 Online Rezervasyon</h1>
+      <p class="page-subtitle">Müşteri randevu portalı kurulumu ve yönetimi</p>
+
+      <h2>Genel Bakış</h2>
+      <p>Online rezervasyon portalı, müşterilerinizin sizi aramadan 7/24 randevu almasını sağlar. Portal ayrı bir web adresi üzerinden erişilir ve kurumunuzun adına göre özelleştirilebilir.</p>
+
+      <h2>Rezervasyon Akışı (Müşteri Tarafı)</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Müşteri portal linkini açar</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Hizmet, tarih ve saat seçer</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Kimlik doğrulaması yapar</strong>Telefon + doğum tarihi veya OTP ile.</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Rezervasyon onaylanır</strong>Randevu sisteme düşer, siz bildirim alırsınız.</div></div>
+      </div>
+
+      <h2>Online Rezervasyon Ayarları</h2>
+      <p>Menü → Ayarlar → Online Rezervasyon Ayarları bölümünden yapılandırın:</p>
+      <table>
+        <tr><th>Ayar</th><th>Açıklama</th></tr>
+        <tr><td>Kaç gün önceden rezervasyon</td><td>Müşterinin kaç gün ilerisi için randevu alabileceği</td></tr>
+        <tr><td>Kaç saat öncesine kadar</td><td>Randevudan kaç saat önceye kadar alınabileceği</td></tr>
+        <tr><td>Seans süresi (dakika)</td><td>Slot büyüklüğü (ör. 30, 45, 60 dk)</td></tr>
+        <tr><td>Hafta sonu</td><td>C.tesi ve Pazar rezervasyona açık mı</td></tr>
+        <tr><td>Kimlik doğrulama</td><td>Telefon+doğum tarihi veya OTP</td></tr>
+        <tr><td>Fiyat gösterimi</td><td>Müşteriye fiyatlar gösterilsin mi</td></tr>
+      </table>
+
+      <h2>Rezervasyonları Yönetme</h2>
+      <p>Online gelen rezervasyonlar ana ekran takvimine otomatik olarak işlenir. Onay gerektiren rezervasyonlar için bildirim gelir.</p>
+
+      <div class="tip">Online rezervasyon aktif olmadan önce Ayarlar bölümünden çalışma saatlerinin ve mekanların eksiksiz tanımlandığından emin olun.</div>
+
+      <h2>Portal Linki Paylaşma</h2>
+      <p>Rezervasyon portalının linkini web sitenize, Instagram bio'nuza veya WhatsApp üzerinden müşterilerinizle paylaşabilirsiniz.</p>
+    </div>
+
+    <!-- ── STOK ── -->
+    <div class="section" id="sec-stok">
+      <h1>📦 Stok Takibi</h1>
+      <p class="page-subtitle">Ürün ve stok hareketi yönetimi <span class="badge">YÖNETİCİ</span></p>
+
+      <h2>Ürün Ekleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Raporlar → Stok</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Ürünler sekmesine gidin</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>+ butonuyla yeni ürün ekleyin</strong>Ürün adı, birimi (adet, litre, kg) ve başlangıç stokunu girin.</div></div>
+      </div>
+
+      <h2>Stok Hareketi Ekleme</h2>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>İlgili ürüne tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Hareket ekle butonuna tıklayın</strong></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Giriş mi Çıkış mı seçin, miktarı girin</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Kaydedin</strong>Güncel stok miktarı otomatik güncellenir.</div></div>
+      </div>
+
+      <h2>Stok Raporları</h2>
+      <p>Tüm stok hareketleri tarih sıralamasıyla listelenir. Ürün bazında hareket geçmişini görebilirsiniz.</p>
+
+      <div class="warning">Stok miktarı sıfırın altına düştüğünde uyarı gösterilir. Negatif stok kayıtları giriş hatası olabilir, kontrol edin.</div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  function showSection(id) {
+    // hide all
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('aside a').forEach(a => a.classList.remove('active'));
+
+    // show target (fallback to home)
+    var target = document.getElementById('sec-' + id) || document.getElementById('sec-home');
+    target.classList.add('active');
+
+    // highlight nav
+    var links = document.querySelectorAll('aside a');
+    links.forEach(function(a) {
+      if (a.getAttribute('onclick') && a.getAttribute('onclick').includes("'" + id + "'")) {
+        a.classList.add('active');
+      }
+    });
+
+    closeMenu();
+    window.scrollTo(0, 0);
+    return false;
+  }
+
+  function toggleMenu() {
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('overlay');
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('show');
+  }
+
+  function closeMenu() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+
+  // show home on load
+  showSection('home');
+</script>
+</body>
+</html>

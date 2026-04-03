@@ -7,7 +7,9 @@ import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher.dart' as launcher;
 
 import '../controllers/institution_controller.dart';
+import '../controllers/user_controller.dart';
 import '../services/sms_service.dart';
+import '../utils/export_utils.dart';
 import '../utils/phone_utils.dart';
 import '../utils/student_utils.dart';
 import '../utils/text_utils.dart';
@@ -23,6 +25,7 @@ class DetayliAra extends StatefulWidget {
 
 class _DetayliAraState extends State<DetayliAra> {
   final InstitutionController kurum = Get.find<InstitutionController>();
+  final UserController _user = Get.find<UserController>();
 
   final TextEditingController _searchController = TextEditingController();
   final List<Map<String, dynamic>> _allDanisanlar = [];
@@ -445,6 +448,7 @@ class _DetayliAraState extends State<DetayliAra> {
       final id = resolveStudentId(danisan);
       return _studentsWithActivePackages.contains(id);
     }).length;
+    final isAdmin = (_user.data['rol'] ?? '').toString() == 'YÖNETİCİ';
     return Wrap(
       spacing: 12,
       runSpacing: 8,
@@ -466,7 +470,71 @@ class _DetayliAraState extends State<DetayliAra> {
           icon: const Icon(Icons.sms_outlined),
           label: Text('SMS Gönder (${_selectedStudentIds.length})'),
         ),
+        if (isAdmin) ...[
+          OutlinedButton.icon(
+            onPressed: _filteredDanisanlar.isEmpty ? null : () => _exportExcel(context),
+            icon: const Icon(Icons.table_chart_outlined),
+            label: const Text('Excel'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _filteredDanisanlar.isEmpty ? null : () => _exportPdf(context),
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            label: const Text('PDF'),
+          ),
+        ],
       ],
+    );
+  }
+
+  void _exportExcel(BuildContext context) {
+    final sortLabel = _sortMode == _sortByRegisterDate ? 'Kayıt Tarihi' : 'Son İşlem';
+    ExportUtils.shareExcel(
+      context: context,
+      fileBaseName: 'danisan_listesi',
+      headers: ['Ad Soyad', 'Telefon', 'Cinsiyet', sortLabel, 'Aktif Paket'],
+      rows: _filteredDanisanlar.map((d) {
+        final name =
+            '${(d['adi'] ?? '').toString()} ${(d['soyadi'] ?? '').toString()}'.trim();
+        final phone = _resolvePhone(d);
+        final gender = (d['cinsiyet'] ?? '').toString();
+        final id = resolveStudentId(d);
+        final date = _sortMode == _sortByRegisterDate
+            ? _readRegistrationDate(d)
+            : _readLastOperationDate(d);
+        return [
+          name.isEmpty ? 'İsimsiz' : name,
+          phone.isEmpty ? '-' : phone,
+          gender.isEmpty ? '-' : gender,
+          _formatDateLabel(date),
+          _studentsWithActivePackages.contains(id) ? 'Var' : 'Yok',
+        ];
+      }).toList(),
+    );
+  }
+
+  void _exportPdf(BuildContext context) {
+    final sortLabel = _sortMode == _sortByRegisterDate ? 'Kayıt' : 'Son İşlem';
+    ExportUtils.sharePdf(
+      context: context,
+      title: 'Danışan Listesi',
+      headers: ['Ad Soyad', 'Telefon', 'Cinsiyet', sortLabel, 'Paket'],
+      rows: _filteredDanisanlar.map((d) {
+        final name =
+            '${(d['adi'] ?? '').toString()} ${(d['soyadi'] ?? '').toString()}'.trim();
+        final phone = _resolvePhone(d);
+        final gender = (d['cinsiyet'] ?? '').toString();
+        final id = resolveStudentId(d);
+        final date = _sortMode == _sortByRegisterDate
+            ? _readRegistrationDate(d)
+            : _readLastOperationDate(d);
+        return [
+          name.isEmpty ? 'İsimsiz' : name,
+          phone.isEmpty ? '-' : phone,
+          gender.isEmpty ? '-' : gender,
+          _formatDateLabel(date),
+          _studentsWithActivePackages.contains(id) ? 'Var' : 'Yok',
+        ];
+      }).toList(),
     );
   }
 

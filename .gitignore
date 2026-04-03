@@ -1,3 +1,6 @@
+# Gizli anahtarlar - git'e gönderme
+.env
+
 # Miscellaneous
 *.class
 *.log

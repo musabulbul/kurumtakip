@@ -1,11 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:kurum_takip/controllers/institution_controller.dart';
 import 'package:kurum_takip/controllers/user_controller.dart';
 import 'package:kurum_takip/pages/kullanici_ekle.dart';
 import 'package:kurum_takip/pages/kullanici_profil.dart';
+import 'package:kurum_takip/utils/export_utils.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 class Kullanicilar extends StatefulWidget {
@@ -27,17 +27,26 @@ class _KullanicilarState extends State<Kullanicilar> {
   final List<String> roller = ["ROL", "YÖNETİCİ", "ÇALIŞAN", "MUHASEBE"];
   String dropDown1Value = "ROL";
   var genel = "", rol = "";
+  // "aktif" → aktif çalışanlar (aktif + pasif), "ayrildi" → ayrılanlar
+  String _calisanDurumuFilter = "aktif";
   final EdgeInsets _pagePadding = const EdgeInsets.symmetric(horizontal: 16);
   bool _isLoading = false;
   String? _errorMessage;
 
   List<Map<String, dynamic>> filtre({String genel = "", String rol = ""}) {
     return kullanicilar.where((e) {
+      final durum = (e["durum"] ?? "aktif").toString();
+      bool matchesDurum;
+      if (_calisanDurumuFilter == "ayrildi") {
+        matchesDurum = durum == "ayrildi";
+      } else {
+        matchesDurum = durum != "ayrildi";
+      }
       bool matchesGenel = genel.isEmpty ||
           e["adi"].toString().toUpperCase().contains(genel.toUpperCase()) ||
           e["soyadi"].toString().toUpperCase().contains(genel.toUpperCase());
       bool matchesRol = rol.isEmpty || e["rol"].toString().toUpperCase().contains(rol.toUpperCase());
-      return matchesGenel && matchesRol;
+      return matchesDurum && matchesGenel && matchesRol;
     }).toList();
   }
 
@@ -66,14 +75,16 @@ class _KullanicilarState extends State<Kullanicilar> {
           .get();
 
       final fetched = querySnapshot.docs.map((doc) {
+        final d = doc.data();
         return {
           "id": doc.id,
-          "uid": doc["uid"] ?? '',
-          "adi": doc["adi"] ?? '',
-          "soyadi": doc["soyadi"] ?? '',
-          "rol": doc["rol"] ?? '',
-          "kisaad": doc["kisaad"] ?? '',
-          "email": doc["email"] ?? '',
+          "uid": d["uid"] ?? '',
+          "adi": d["adi"] ?? '',
+          "soyadi": d["soyadi"] ?? '',
+          "rol": d["rol"] ?? '',
+          "kisaad": d["kisaad"] ?? '',
+          "email": d["email"] ?? '',
+          "durum": d["durum"] ?? 'aktif',
         };
       }).toList();
 
@@ -100,24 +111,21 @@ class _KullanicilarState extends State<Kullanicilar> {
   }
 
   Future<void> createExcelFile() async {
-    final excel = Excel.createExcel();
-    final sheet = excel['Sheet1'];
-
-    sheet.appendRow(['Adı', 'Soyadı', 'Rol', 'Kısa Ad', 'E-posta']);
-
-    final rows = _aramaSonucu.isEmpty ? kullanicilar : _aramaSonucu;
-
-    for (var row in rows) {
-      sheet.appendRow([
-        row['adi'],
-        row['soyadi'],
-        row['rol'],
-        row['kisaad'],
-        row['email'],
-      ]);
-    }
-
-    excel.save(fileName: 'Kullanicilar.xlsx');
+    final data = _aramaSonucu.isEmpty ? kullanicilar : _aramaSonucu;
+    await ExportUtils.shareExcel(
+      context: context,
+      fileBaseName: 'Kullanicilar',
+      headers: ['Adı', 'Soyadı', 'Rol', 'Kısa Ad', 'E-posta'],
+      rows: data
+          .map((row) => [
+                row['adi']?.toString() ?? '',
+                row['soyadi']?.toString() ?? '',
+                row['rol']?.toString() ?? '',
+                row['kisaad']?.toString() ?? '',
+                row['email']?.toString() ?? '',
+              ])
+          .toList(),
+    );
   }
 
   @override
@@ -130,7 +138,7 @@ class _KullanicilarState extends State<Kullanicilar> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Kullanıcı Yönetimi"),
+        title: const Text("Personel Yönetimi"),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_add),
@@ -218,6 +226,23 @@ class _KullanicilarState extends State<Kullanicilar> {
                 ara();
               },
             ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: _calisanDurumuFilter,
+              decoration: InputDecoration(
+                labelText: 'Çalışan Durumu',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'aktif', child: Text('Aktif Çalışanlar')),
+                DropdownMenuItem(value: 'ayrildi', child: Text('Ayrılanlar')),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => _calisanDurumuFilter = value);
+                ara();
+              },
+            ),
           ],
         ),
       ),
@@ -287,18 +312,36 @@ class _KullanicilarState extends State<Kullanicilar> {
         final item = _aramaSonucu[index];
         final initials = _getInitials(item['adi'], item['soyadi']);
 
+        final durum = (item['durum'] ?? 'aktif').toString();
+        final bool isPasif = durum == 'pasif';
+
         return Card(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: ListTile(
             leading: CircleAvatar(
+              backgroundColor: isPasif ? Colors.orange.shade100 : null,
               child: Text(initials),
             ),
             title: Text(
               "${item['adi']} ${item['soyadi']}",
-              style: const TextStyle(fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: isPasif ? Colors.grey : null,
+              ),
             ),
             subtitle: Text(item['email']),
-            trailing: Chip(label: Text(item['rol'] ?? '')),
+            trailing: Wrap(
+              spacing: 4,
+              children: [
+                if (isPasif)
+                  const Chip(
+                    label: Text('Pasif', style: TextStyle(fontSize: 11)),
+                    backgroundColor: Color(0xFFFFE0B2),
+                    padding: EdgeInsets.zero,
+                  ),
+                Chip(label: Text(item['rol'] ?? '')),
+              ],
+            ),
             onTap: () {
               Get.to(() => UserProfilePage(userDocId: item["id"]));
             },

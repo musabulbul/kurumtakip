@@ -40,6 +40,26 @@ class _StokPageState extends State<StokPage> {
 
   _StockSortType _stockSortType = _StockSortType.alphabetical;
 
+  // Tüketim tab state
+  final TextEditingController _consProductNameController = TextEditingController();
+  final TextEditingController _consIcerikController = TextEditingController();
+  final TextEditingController _consEntryQtyController = TextEditingController();
+  final TextEditingController _consEntryNoteController = TextEditingController();
+  final TextEditingController _consProductSearchController = TextEditingController();
+  final TextEditingController _consListSearchController = TextEditingController();
+
+  String _consSelectedGirisUnit = 'Adet';
+  String _consSelectedCikisUnit = 'Ml.';
+
+  String? _consEntryProductId;
+  _ConsumptionProduct? _consEntryProduct;
+
+  bool _consIsSavingProduct = false;
+  bool _consIsSavingEntry = false;
+  bool _consProductFormExpanded = true;
+
+  _StockSortType _consSortType = _StockSortType.alphabetical;
+
   @override
   void dispose() {
     _productNameController.dispose();
@@ -48,6 +68,12 @@ class _StokPageState extends State<StokPage> {
     _stockNoteController.dispose();
     _productSearchController.dispose();
     _stockListSearchController.dispose();
+    _consProductNameController.dispose();
+    _consIcerikController.dispose();
+    _consEntryQtyController.dispose();
+    _consEntryNoteController.dispose();
+    _consProductSearchController.dispose();
+    _consListSearchController.dispose();
     super.dispose();
   }
 
@@ -67,6 +93,20 @@ class _StokPageState extends State<StokPage> {
         .collection('kurumlar')
         .doc(kurumkodu)
         .collection('stokHareketleri');
+  }
+
+  CollectionReference<Map<String, dynamic>> _tuketimUrunlerRef(String kurumkodu) {
+    return FirebaseFirestore.instance
+        .collection('kurumlar')
+        .doc(kurumkodu)
+        .collection('tuketimUrunler');
+  }
+
+  CollectionReference<Map<String, dynamic>> _tuketimHareketleriRef(String kurumkodu) {
+    return FirebaseFirestore.instance
+        .collection('kurumlar')
+        .doc(kurumkodu)
+        .collection('tuketimHareketleri');
   }
 
   double? _parseDecimal(String raw) {
@@ -219,6 +259,150 @@ class _StokPageState extends State<StokPage> {
     }
   }
 
+  Future<void> _saveConsProduct() async {
+    if (_consIsSavingProduct) return;
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+    final name = _consProductNameController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ürün adı girin.')),
+      );
+      return;
+    }
+    final icerik = _parseDecimal(_consIcerikController.text);
+    if (icerik == null || icerik <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Geçerli bir içerik miktarı girin.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _consIsSavingProduct = true;
+    });
+
+    try {
+      await _tuketimUrunlerRef(kurumkodu).add({
+        'ad': toUpperCaseTr(name),
+        'girisUnit': _consSelectedGirisUnit,
+        'cikisUnit': _consSelectedCikisUnit,
+        'icerikMiktari': icerik,
+        'stok': 0.0,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (!mounted) return;
+      _consProductNameController.clear();
+      _consIcerikController.clear();
+      setState(() {
+        _consSelectedGirisUnit = 'Adet';
+        _consSelectedCikisUnit = 'Ml.';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ürün kaydedildi.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ürün kaydedilemedi: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _consIsSavingProduct = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _saveConsEntry() async {
+    if (_consIsSavingEntry) return;
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+    if (_consEntryProductId == null || _consEntryProduct == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Stok girişi için ürün seçin.')),
+      );
+      return;
+    }
+    final quantity = _parseDecimal(_consEntryQtyController.text);
+    if (quantity == null || quantity <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Geçerli bir miktar girin.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _consIsSavingEntry = true;
+    });
+
+    final product = _consEntryProduct!;
+    final productId = _consEntryProductId!;
+    final note = _consEntryNoteController.text.trim();
+    final createdByName = [
+      (_user.data['adi'] ?? '').toString().trim(),
+      (_user.data['soyadi'] ?? '').toString().trim(),
+    ].where((part) => part.isNotEmpty).join(' ');
+    final createdById =
+        (_user.data['email'] ?? _user.data['uid'] ?? '').toString();
+
+    try {
+      final productRef = _tuketimUrunlerRef(kurumkodu).doc(productId);
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(productRef);
+        if (!snapshot.exists) {
+          throw 'Ürün bulunamadı.';
+        }
+        transaction.update(productRef, {
+          'stok': FieldValue.increment(quantity),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      });
+      await _tuketimHareketleriRef(kurumkodu).add({
+        'urunId': productId,
+        'urunAdi': product.name,
+        'girisUnit': product.girisUnit,
+        'cikisUnit': product.cikisUnit,
+        'icerikMiktari': product.icerikMiktari,
+        'girisMiktar': quantity,
+        'tip': 'giris',
+        'note': note,
+        'createdAt': FieldValue.serverTimestamp(),
+        'createdById': createdById,
+        'createdByName': createdByName,
+      });
+      if (!mounted) return;
+      _consEntryQtyController.clear();
+      _consEntryNoteController.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Stok girişi işlendi.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Stok girişi yapılamadı: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _consIsSavingEntry = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
@@ -228,6 +412,8 @@ class _StokPageState extends State<StokPage> {
           title: const Text('Stok'),
           actions: const [HomeIconButton()],
           bottom: const TabBar(
+            labelColor: Colors.black,
+            unselectedLabelColor: Colors.black54,
             tabs: [
               Tab(text: 'Satış'),
               Tab(text: 'Tüketim'),
@@ -237,7 +423,7 @@ class _StokPageState extends State<StokPage> {
         body: TabBarView(
           children: [
             _buildSalesTab(),
-            _buildConsumptionPlaceholder(),
+            _buildConsumptionTab(),
           ],
         ),
       ),
@@ -275,13 +461,981 @@ class _StokPageState extends State<StokPage> {
     );
   }
 
-  Widget _buildConsumptionPlaceholder() {
-    return Center(
-      child: Text(
-        'Tüketim bölümü yakında.',
-        style: Theme.of(context).textTheme.titleMedium,
+  Widget _buildConsumptionTab() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _buildSectionHeader(
+          icon: Icons.science_outlined,
+          title: 'Ürün Tanımı',
+          subtitle: 'Tüketim ürünlerini tanımlayın.',
+        ),
+        const SizedBox(height: 8),
+        _buildConsProductFormCard(),
+        const SizedBox(height: 20),
+        _buildSectionHeader(
+          icon: Icons.add_business_outlined,
+          title: 'Stok Girişi',
+          subtitle: 'Ürünlere stok ekleyin.',
+        ),
+        const SizedBox(height: 8),
+        _buildConsEntryCard(),
+        const SizedBox(height: 20),
+        _buildSectionHeader(
+          icon: Icons.list_alt_outlined,
+          title: 'Mevcut Stok',
+          subtitle: 'Tüm ürünleri ve stok durumunu görüntüleyin.',
+        ),
+        const SizedBox(height: 8),
+        _buildConsListCard(),
+      ],
+    );
+  }
+
+  Widget _buildConsProductFormCard() {
+    return Card(
+      child: ExpansionTile(
+        initiallyExpanded: _consProductFormExpanded,
+        onExpansionChanged: (value) {
+          setState(() {
+            _consProductFormExpanded = value;
+          });
+        },
+        title: const Text(
+          'Yeni ürün ekle',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          TextField(
+            controller: _consProductNameController,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Ürün adı',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            value: _consSelectedGirisUnit,
+            items: _units
+                .map((unit) => DropdownMenuItem(value: unit, child: Text(unit)))
+                .toList(),
+            onChanged: _consIsSavingProduct
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _consSelectedGirisUnit = value;
+                    });
+                  },
+            decoration: const InputDecoration(
+              labelText: 'Giriş birimi',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            value: _consSelectedCikisUnit,
+            items: _units
+                .map((unit) => DropdownMenuItem(value: unit, child: Text(unit)))
+                .toList(),
+            onChanged: _consIsSavingProduct
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _consSelectedCikisUnit = value;
+                    });
+                  },
+            decoration: const InputDecoration(
+              labelText: 'Çıkış birimi',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _consIcerikController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'İçerik miktarı',
+              suffixText:
+                  '$_consSelectedCikisUnit / $_consSelectedGirisUnit',
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _consIsSavingProduct ? null : _saveConsProduct,
+              icon: _consIsSavingProduct
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.check_circle_outline),
+              label: Text(
+                  _consIsSavingProduct ? 'Kaydediliyor' : 'Ürün Kaydet'),
+            ),
+          ),
+        ],
       ),
     );
+  }
+
+  Widget _buildConsEntryCard() {
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('Kurum bilgisi bulunamadı.'),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _tuketimUrunlerRef(kurumkodu).orderBy('ad').snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Text('Ürünler yüklenemedi.');
+            }
+            if (!snapshot.hasData) {
+              return const LinearProgressIndicator(minHeight: 2);
+            }
+            final docs = snapshot.data!.docs;
+            final products =
+                docs.map((doc) => _ConsumptionProduct.fromSnapshot(doc)).toList();
+            if (products.isEmpty) {
+              return const Text('Önce ürün tanımı yapmalısınız.');
+            }
+            if (_consEntryProductId == null ||
+                !products.any((p) => p.id == _consEntryProductId)) {
+              final first = products.first;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                setState(() {
+                  _consEntryProductId = first.id;
+                  _consEntryProduct = first;
+                });
+              });
+            }
+            final query = normalizeTr(_consProductSearchController.text);
+            final filteredProducts = query.isEmpty
+                ? products
+                : products
+                    .where((p) => normalizeTr(p.name).contains(query))
+                    .toList();
+            if (filteredProducts.isNotEmpty &&
+                !filteredProducts.any((p) => p.id == _consEntryProductId)) {
+              final firstMatch = filteredProducts.first;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                setState(() {
+                  _consEntryProductId = firstMatch.id;
+                  _consEntryProduct = firstMatch;
+                });
+              });
+            }
+            final sourceList =
+                filteredProducts.isNotEmpty ? filteredProducts : products;
+            final selectedProduct = sourceList.firstWhere(
+              (p) => p.id == _consEntryProductId,
+              orElse: () => sourceList.first,
+            );
+
+            return Column(
+              children: [
+                TextField(
+                  controller: _consProductSearchController,
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    labelText: 'Ürün ara',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _consProductSearchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () {
+                              _consProductSearchController.clear();
+                              setState(() {});
+                            },
+                          ),
+                    border: const OutlineInputBorder(),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedProduct.id,
+                  items: sourceList
+                      .map((p) => DropdownMenuItem(
+                            value: p.id,
+                            child: Text(p.label),
+                          ))
+                      .toList(),
+                  onChanged: _consIsSavingEntry
+                      ? null
+                      : (value) {
+                          final selected =
+                              sourceList.firstWhere((p) => p.id == value);
+                          setState(() {
+                            _consEntryProductId = selected.id;
+                            _consEntryProduct = selected;
+                          });
+                        },
+                  decoration: const InputDecoration(
+                    labelText: 'Ürün',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (filteredProducts.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Eşleşen ürün bulunamadı.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _consEntryQtyController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Miktar',
+                    suffixText: selectedProduct.girisUnit,
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _consEntryNoteController,
+                  minLines: 2,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Not (opsiyonel)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _consIsSavingEntry ? null : _saveConsEntry,
+                    icon: _consIsSavingEntry
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add_circle_outline),
+                    label: Text(_consIsSavingEntry
+                        ? 'Kaydediliyor'
+                        : 'Stok Girişi Yap'),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConsListCard() {
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('Kurum bilgisi bulunamadı.'),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _tuketimUrunlerRef(kurumkodu).orderBy('ad').snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('Stok listesi yüklenemedi.'),
+              );
+            }
+            if (!snapshot.hasData) {
+              return const LinearProgressIndicator(minHeight: 2);
+            }
+            final docs = snapshot.data!.docs;
+            if (docs.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('Henüz ürün bulunmuyor.'),
+              );
+            }
+            final products =
+                docs.map((doc) => _ConsumptionProduct.fromSnapshot(doc)).toList();
+            final searchQuery = normalizeTr(_consListSearchController.text);
+            final filteredProducts = searchQuery.isEmpty
+                ? products
+                : products
+                    .where((p) => normalizeTr(p.name).contains(searchQuery))
+                    .toList();
+            final sortedProducts = _sortConsProducts(filteredProducts, _consSortType);
+
+            return ListView.separated(
+              itemCount: sortedProducts.length + 1,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return Column(
+                    children: [
+                      TextField(
+                        controller: _consListSearchController,
+                        textInputAction: TextInputAction.search,
+                        decoration: InputDecoration(
+                          labelText: 'Ürün ara',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _consListSearchController.text.isEmpty
+                              ? null
+                              : IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () {
+                                    _consListSearchController.clear();
+                                    setState(() {});
+                                  },
+                                ),
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<_StockSortType>(
+                        value: _consSortType,
+                        items: _StockSortType.values
+                            .map((type) => DropdownMenuItem(
+                                  value: type,
+                                  child: Text(_stockSortLabel(type)),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() {
+                            _consSortType = value;
+                          });
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Sıralama',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (sortedProducts.isEmpty)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Eşleşen ürün bulunamadı.',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                          ),
+                        ),
+                    ],
+                  );
+                }
+                final product = sortedProducts[index - 1];
+                final stok = product.stock ?? 0;
+                final stockLabel =
+                    '${stok.toStringAsFixed(2)} ${product.girisUnit}';
+                final stockCikisLabel =
+                    '≈ ${(stok * product.icerikMiktari).toStringAsFixed(1)} ${product.cikisUnit}';
+                final isManager = isManagerUser(_user.data);
+                return ListTile(
+                  title: Text(
+                    product.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(
+                      '${product.girisUnit} → ${product.cikisUnit} (${product.icerikMiktari.toStringAsFixed(0)} ${product.cikisUnit}/${product.girisUnit})'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            stockLabel,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          Text(
+                            stockCikisLabel,
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                          ),
+                        ],
+                      ),
+                      PopupMenuButton<_ConsumptionMenuAction>(
+                        icon: const Icon(Icons.more_vert),
+                        onSelected: (action) async {
+                          switch (action) {
+                            case _ConsumptionMenuAction.adjustStock:
+                              await _showConsAdjustStockDialog(product);
+                              break;
+                            case _ConsumptionMenuAction.consume:
+                              await _showConsumptionDialog(product);
+                              break;
+                            case _ConsumptionMenuAction.movements:
+                              await _showConsMovements(product);
+                              break;
+                            case _ConsumptionMenuAction.delete:
+                              if (!isManager) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content:
+                                          Text('Bu işlem için yetkiniz yok.'),
+                                    ),
+                                  );
+                                }
+                                return;
+                              }
+                              await _confirmDeleteConsProduct(product);
+                              break;
+                          }
+                        },
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: _ConsumptionMenuAction.adjustStock,
+                            child: Text('Stok düzeltme'),
+                          ),
+                          const PopupMenuItem(
+                            value: _ConsumptionMenuAction.consume,
+                            child: Text('Tüketim'),
+                          ),
+                          const PopupMenuItem(
+                            value: _ConsumptionMenuAction.movements,
+                            child: Text('Stok hareketleri'),
+                          ),
+                          if (isManager)
+                            const PopupMenuItem(
+                              value: _ConsumptionMenuAction.delete,
+                              child: Text('Ürünü sil'),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  List<_ConsumptionProduct> _sortConsProducts(
+    List<_ConsumptionProduct> products,
+    _StockSortType sortType,
+  ) {
+    final sorted = [...products];
+    switch (sortType) {
+      case _StockSortType.alphabetical:
+        sorted.sort((a, b) => a.name.compareTo(b.name));
+        break;
+      case _StockSortType.stockAsc:
+        sorted.sort((a, b) => (a.stock ?? 0).compareTo(b.stock ?? 0));
+        break;
+      case _StockSortType.stockDesc:
+        sorted.sort((a, b) => (b.stock ?? 0).compareTo(a.stock ?? 0));
+        break;
+    }
+    return sorted;
+  }
+
+  Future<void> _showConsAdjustStockDialog(_ConsumptionProduct product) async {
+    final controller = TextEditingController(
+      text: product.stock != null ? product.stock!.toStringAsFixed(2) : '',
+    );
+    bool isSaving = false;
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Stok düzeltme'),
+              content: TextField(
+                controller: controller,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'Yeni stok miktarı',
+                  suffixText: product.girisUnit,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final newValue = _parseDecimal(controller.text);
+                          if (newValue == null || newValue < 0) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Geçerli bir miktar girin.'),
+                              ),
+                            );
+                            return;
+                          }
+                          setDialogState(() {
+                            isSaving = true;
+                          });
+                          try {
+                            final productRef =
+                                _tuketimUrunlerRef(kurumkodu).doc(product.id);
+                            await productRef.update({
+                              'stok': newValue,
+                              'updatedAt': FieldValue.serverTimestamp(),
+                            });
+                            await _tuketimHareketleriRef(kurumkodu).add({
+                              'urunId': product.id,
+                              'urunAdi': product.name,
+                              'girisUnit': product.girisUnit,
+                              'cikisUnit': product.cikisUnit,
+                              'icerikMiktari': product.icerikMiktari,
+                              'girisMiktar': newValue,
+                              'tip': 'duzeltme',
+                              'oncekiStok': product.stock ?? 0,
+                              'createdAt': FieldValue.serverTimestamp(),
+                              'createdById': (_user.data['email'] ??
+                                      _user.data['uid'] ??
+                                      '')
+                                  .toString(),
+                              'createdByName': [
+                                (_user.data['adi'] ?? '').toString().trim(),
+                                (_user.data['soyadi'] ?? '').toString().trim(),
+                              ]
+                                  .where((part) => part.isNotEmpty)
+                                  .join(' '),
+                            });
+                            if (!mounted || !dialogContext.mounted) return;
+                            Navigator.of(dialogContext).pop();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Stok düzeltilemedi: $e'),
+                                ),
+                              );
+                            }
+                          } finally {
+                            if (dialogContext.mounted) {
+                              setDialogState(() {
+                                isSaving = false;
+                              });
+                            }
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    controller.dispose();
+  }
+
+  Future<void> _showConsumptionDialog(_ConsumptionProduct product) async {
+    final qtyController = TextEditingController();
+    final noteController = TextEditingController();
+    bool isSaving = false;
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final qtyText = qtyController.text.trim();
+            final qtyParsed = _parseDecimal(qtyText);
+            final calcLabel = (qtyParsed != null && qtyParsed > 0)
+                ? '= ${(qtyParsed / product.icerikMiktari).toStringAsFixed(4)} ${product.girisUnit} düşülecek'
+                : null;
+
+            return AlertDialog(
+              title: const Text('Tüketim'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    product.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Giriş birimi: ${product.girisUnit} • İçerik: ${product.icerikMiktari.toStringAsFixed(0)} ${product.cikisUnit}/${product.girisUnit}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: qtyController,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Miktar',
+                      suffixText: product.cikisUnit,
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (_) => setDialogState(() {}),
+                  ),
+                  if (calcLabel != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      calcLabel,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: noteController,
+                    minLines: 2,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Not (opsiyonel)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Vazgeç'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final qty = _parseDecimal(qtyController.text);
+                          if (qty == null || qty <= 0) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Geçerli bir miktar girin.'),
+                              ),
+                            );
+                            return;
+                          }
+                          if ((product.stock ?? 0) * product.icerikMiktari <
+                              qty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Stok yetersiz.'),
+                              ),
+                            );
+                            return;
+                          }
+                          final girisDusum = qty / product.icerikMiktari;
+                          setDialogState(() {
+                            isSaving = true;
+                          });
+                          try {
+                            final productRef =
+                                _tuketimUrunlerRef(kurumkodu).doc(product.id);
+                            await FirebaseFirestore.instance
+                                .runTransaction((transaction) async {
+                              final snapshot =
+                                  await transaction.get(productRef);
+                              final currentStock =
+                                  _readDouble(snapshot.data()?['stok']) ?? 0;
+                              if (currentStock * product.icerikMiktari < qty) {
+                                throw 'Stok yetersiz.';
+                              }
+                              transaction.update(productRef, {
+                                'stok': FieldValue.increment(-girisDusum),
+                                'updatedAt': FieldValue.serverTimestamp(),
+                              });
+                            });
+                            await _tuketimHareketleriRef(kurumkodu).add({
+                              'urunId': product.id,
+                              'urunAdi': product.name,
+                              'girisUnit': product.girisUnit,
+                              'cikisUnit': product.cikisUnit,
+                              'icerikMiktari': product.icerikMiktari,
+                              'cikisMiktar': qty,
+                              'girisDusum': girisDusum,
+                              'tip': 'tuketim',
+                              'note': noteController.text.trim(),
+                              'createdAt': FieldValue.serverTimestamp(),
+                              'createdById': (_user.data['email'] ??
+                                      _user.data['uid'] ??
+                                      '')
+                                  .toString(),
+                              'createdByName': [
+                                (_user.data['adi'] ?? '').toString().trim(),
+                                (_user.data['soyadi'] ?? '').toString().trim(),
+                              ]
+                                  .where((part) => part.isNotEmpty)
+                                  .join(' '),
+                            });
+                            if (!mounted || !dialogContext.mounted) return;
+                            Navigator.of(dialogContext).pop();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                    content:
+                                        Text('Tüketim kaydedilemedi: $e')),
+                              );
+                            }
+                          } finally {
+                            if (dialogContext.mounted) {
+                              setDialogState(() {
+                                isSaving = false;
+                              });
+                            }
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    qtyController.dispose();
+    noteController.dispose();
+  }
+
+  Future<void> _showConsMovements(_ConsumptionProduct product) async {
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Stok hareketleri'),
+          content: SizedBox(
+            width: 420,
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _tuketimHareketleriRef(kurumkodu)
+                  .where('urunId', isEqualTo: product.id)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const Text('Hareketler yüklenemedi.');
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final docs = snapshot.data!.docs.toList()
+                  ..sort((a, b) {
+                    final ta = a.data()['createdAt'];
+                    final tb = b.data()['createdAt'];
+                    if (ta is Timestamp && tb is Timestamp) {
+                      return tb.compareTo(ta);
+                    }
+                    return 0;
+                  });
+                if (docs.isEmpty) {
+                  return const Text('Henüz hareket bulunmuyor.');
+                }
+                return ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: docs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final data = docs[index].data();
+                    final type = (data['tip'] ?? '').toString();
+                    final note = (data['note'] ?? '').toString().trim();
+                    final createdAt = data['createdAt'] is Timestamp
+                        ? (data['createdAt'] as Timestamp).toDate()
+                        : null;
+                    final dateLabel = createdAt == null
+                        ? '-'
+                        : '${createdAt.day.toString().padLeft(2, '0')}.'
+                            '${createdAt.month.toString().padLeft(2, '0')}.'
+                            '${createdAt.year}';
+
+                    String movementText;
+                    if (type == 'tuketim') {
+                      final cikisMiktar =
+                          _readDouble(data['cikisMiktar']) ?? 0;
+                      final girisDusum =
+                          _readDouble(data['girisDusum']) ?? 0;
+                      final cikisUnit =
+                          (data['cikisUnit'] ?? product.cikisUnit).toString();
+                      final girisUnit =
+                          (data['girisUnit'] ?? product.girisUnit).toString();
+                      movementText =
+                          'Tüketim • ${cikisMiktar.toStringAsFixed(2)} $cikisUnit (= ${girisDusum.toStringAsFixed(4)} $girisUnit)';
+                    } else if (type == 'giris') {
+                      final girisMiktar =
+                          _readDouble(data['girisMiktar']) ?? 0;
+                      final girisUnit =
+                          (data['girisUnit'] ?? product.girisUnit).toString();
+                      movementText =
+                          'Stok girişi • ${girisMiktar.toStringAsFixed(2)} $girisUnit';
+                    } else {
+                      movementText = _movementLabel(type);
+                    }
+
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outlineVariant
+                              .withOpacity(0.5),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            movementText,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 4),
+                          Text('Tarih: $dateLabel'),
+                          if (note.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text('Not: $note'),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Kapat'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmDeleteConsProduct(_ConsumptionProduct product) async {
+    final kurumkodu = _currentInstitutionId();
+    if (kurumkodu.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kurum bilgisi bulunamadı.')),
+      );
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Ürün silinsin mi?'),
+        content: const Text('Bu ürün kalıcı olarak silinecektir.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Vazgeç'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sil'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _tuketimUrunlerRef(kurumkodu).doc(product.id).delete();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ürün silindi.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ürün silinemedi: $e')),
+        );
+      }
+    }
   }
 
   Widget _buildSectionHeader({
@@ -1207,7 +2361,6 @@ class _StokPageState extends State<StokPage> {
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _stockMovementRef(kurumkodu)
                   .where('urunId', isEqualTo: product.id)
-                  .orderBy('createdAt', descending: true)
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
@@ -1216,7 +2369,15 @@ class _StokPageState extends State<StokPage> {
                 if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                final docs = snapshot.data!.docs;
+                final docs = snapshot.data!.docs.toList()
+                  ..sort((a, b) {
+                    final ta = a.data()['createdAt'];
+                    final tb = b.data()['createdAt'];
+                    if (ta is Timestamp && tb is Timestamp) {
+                      return tb.compareTo(ta);
+                    }
+                    return 0;
+                  });
                 if (docs.isEmpty) {
                   return const Text('Henüz hareket bulunmuyor.');
                 }
@@ -1389,4 +2550,46 @@ double? _readDouble(dynamic value) {
   if (value is num) return value.toDouble();
   final parsed = double.tryParse(value.toString());
   return parsed;
+}
+
+enum _ConsumptionMenuAction {
+  consume,
+  adjustStock,
+  movements,
+  delete,
+}
+
+class _ConsumptionProduct {
+  const _ConsumptionProduct({
+    required this.id,
+    required this.name,
+    required this.girisUnit,
+    required this.cikisUnit,
+    required this.icerikMiktari,
+    required this.stock,
+  });
+
+  final String id;
+  final String name;
+  final String girisUnit;
+  final String cikisUnit;
+  final double icerikMiktari;
+  final double? stock;
+
+  String get label => '$name • $girisUnit';
+  double get stockInCikisUnit => (stock ?? 0) * icerikMiktari;
+
+  factory _ConsumptionProduct.fromSnapshot(
+    QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final data = snapshot.data();
+    return _ConsumptionProduct(
+      id: snapshot.id,
+      name: (data['ad'] ?? '').toString().trim(),
+      girisUnit: (data['girisUnit'] ?? 'Adet').toString().trim(),
+      cikisUnit: (data['cikisUnit'] ?? 'Ml.').toString().trim(),
+      icerikMiktari: _readDouble(data['icerikMiktari']) ?? 1.0,
+      stock: _readDouble(data['stok']),
+    );
+  }
 }

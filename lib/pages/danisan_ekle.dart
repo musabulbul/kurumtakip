@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 import '../controllers/institution_controller.dart';
+import '../controllers/user_controller.dart';
 import '../utils/phone_utils.dart';
 import '../utils/text_utils.dart';
 
@@ -28,6 +29,7 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
   final _aciklamaController = TextEditingController();
   final _dogumTarihiController = TextEditingController();
   final InstitutionController _kurum = Get.find<InstitutionController>();
+  final UserController _user = Get.find<UserController>();
 
   String? _selectedGender;
   DateTime? _selectedBirthDate;
@@ -222,12 +224,13 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
     String surname = '';
     String firstName;
     if (nameParts.length >= 2) {
-      surname = toUpperCaseTr(nameParts.removeLast());
-      firstName = toUpperCaseTr(nameParts.join(' '));
+      surname = toTitleCaseTr(nameParts.removeLast());
+      firstName = toTitleCaseTr(nameParts.join(' '));
     } else {
-      firstName = toUpperCaseTr(trimmedFullName);
+      firstName = toTitleCaseTr(trimmedFullName);
     }
     final normalizedPhone = normalizePhone(_telefonController.text.trim());
+    final ekleyenAdi = '${_user.data['adi'] ?? ''} ${_user.data['soyadi'] ?? ''}'.trim();
 
     setState(() {
       _submitting = true;
@@ -245,7 +248,7 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
         'id': docRef.id,
         'adi': firstName,
         'soyadi': surname,
-        'telefon': normalizedPhone,
+        'telefon': normalizedPhone.isNotEmpty ? '+90$normalizedPhone' : '',
         if (_selectedGender != null) 'cinsiyet': _selectedGender,
         'adres': _adresController.text.trim(),
         'aciklama': _aciklamaController.text.trim(),
@@ -253,6 +256,7 @@ class _DanisanEklePageState extends State<DanisanEklePage> {
         if (_selectedBirthDate != null)
           'dogumtarihi': DateFormat('yyyy-MM-dd').format(_selectedBirthDate!),
         'kurumkodu': kurumKodu,
+        if (ekleyenAdi.isNotEmpty) 'ekleyen': ekleyenAdi,
         'olusturulmaZamani': Timestamp.now(),
       });
 

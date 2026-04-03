@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../controllers/institution_controller.dart';
 import '../../controllers/user_controller.dart';
+import '../../utils/export_utils.dart';
 
 class GiderlerRaporuPage extends StatefulWidget {
   const GiderlerRaporuPage({super.key});
@@ -39,6 +40,7 @@ class _GiderlerRaporuPageState extends State<GiderlerRaporuPage> {
   final UserController _user = Get.find<UserController>();
 
   String _selectedExpenseType = _allFilter;
+  List<_ExpenseEntry> _cachedFiltered = [];
   String _selectedPaymentType = _allFilter;
   String _selectedPaidBy = _allFilter;
   late DateTime _startDate;
@@ -67,10 +69,23 @@ class _GiderlerRaporuPageState extends State<GiderlerRaporuPage> {
         .collection('giderTurleri')
         .snapshots();
 
+    final isAdmin = (_user.data['rol'] ?? '').toString() == 'YÖNETİCİ';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Giderler'),
         actions: [
+          if (isAdmin) ...[
+            IconButton(
+              tooltip: 'Excel İndir',
+              icon: const Icon(Icons.table_chart_outlined),
+              onPressed: () => _exportExcel(context),
+            ),
+            IconButton(
+              tooltip: 'PDF İndir',
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              onPressed: () => _exportPdf(context),
+            ),
+          ],
           IconButton(
             tooltip: 'Gider Türü Ekle',
             onPressed: () => _openExpenseTypeDialog(institutionId),
@@ -171,6 +186,7 @@ class _GiderlerRaporuPageState extends State<GiderlerRaporuPage> {
 
               final totalAmount =
                   filtered.fold<double>(0, (sum, item) => sum + item.amount);
+              _cachedFiltered = filtered;
 
               return ListView(
                 padding: const EdgeInsets.all(16),
@@ -778,6 +794,47 @@ class _GiderlerRaporuPageState extends State<GiderlerRaporuPage> {
         );
       }
     }
+  }
+
+  void _exportExcel(BuildContext context) {
+    ExportUtils.shareExcel(
+      context: context,
+      fileBaseName: 'giderler_raporu',
+      headers: const ['Gider', 'Tür', 'Ödeme Çeşidi', 'Tutar (TL)', 'Ödemeyi Yapan', 'Açıklama', 'Tarih'],
+      rows: _cachedFiltered
+          .map((e) => [
+                e.title.isNotEmpty ? e.title : 'Gider',
+                e.typeLabel,
+                e.paymentTypeLabel,
+                _formatPrice(e.amount),
+                e.paidByName,
+                e.note,
+                e.createdAt != null
+                    ? DateFormat('dd.MM.yyyy HH:mm').format(e.createdAt!)
+                    : '',
+              ])
+          .toList(),
+    );
+  }
+
+  void _exportPdf(BuildContext context) {
+    ExportUtils.sharePdf(
+      context: context,
+      title: 'Giderler Raporu',
+      headers: const ['Gider', 'Tür', 'Ödeme', 'Tutar', 'Yapan', 'Tarih'],
+      rows: _cachedFiltered
+          .map((e) => [
+                e.title.isNotEmpty ? e.title : 'Gider',
+                e.typeLabel,
+                e.paymentTypeLabel,
+                '${_formatPrice(e.amount)} TL',
+                e.paidByName,
+                e.createdAt != null
+                    ? DateFormat('dd.MM.yyyy HH:mm').format(e.createdAt!)
+                    : '',
+              ])
+          .toList(),
+    );
   }
 
   String _resolveUserDisplayName(Map<dynamic, dynamic> userData) {

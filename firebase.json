@@ -68,6 +68,15 @@
           "destination": "/index.html"
         }
       ]
+    },
+    {
+      "target": "docs",
+      "public": "docs/yardim",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ]
     }
   ],
   "storage": {

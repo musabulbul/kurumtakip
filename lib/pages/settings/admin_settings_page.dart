@@ -5,6 +5,8 @@ import 'package:kurum_takip/widgets/home_icon_button.dart';
 import '../../controllers/user_controller.dart';
 import '../../utils/permission_utils.dart';
 import 'islemler_page.dart';
+import 'konum_ayarlari_page.dart';
+import 'rehber_ayarlari_page.dart';
 import 'mekanlar_page.dart';
 import 'mesajlar_page.dart';
 import 'online_booking_settings_page.dart';
@@ -117,6 +119,26 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
                     onTap: _openPaketlerPage,
                   ),
                 ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.location_on_outlined),
+                    title: const Text('Konum'),
+                    subtitle: const Text('Adres, ilçe ve harita bağlantısı'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openKonumAyarlariPage,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.contacts_outlined),
+                    title: const Text('Telefon Rehberi'),
+                    subtitle: const Text('Toplu aktarım ve kayıt formatı ayarları'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openRehberAyarlariPage,
+                  ),
+                ),
               ],
             ),
     );
@@ -173,6 +195,24 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
     }
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const OnlineBookingSettingsPage()),
+    );
+  }
+
+  void _openKonumAyarlariPage() {
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const KonumAyarlariPage()),
+    );
+  }
+
+  void _openRehberAyarlariPage() {
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const RehberAyarlariPage()),
     );
   }
 }

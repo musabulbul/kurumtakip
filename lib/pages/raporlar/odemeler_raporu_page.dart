@@ -4,6 +4,8 @@ import 'package:get/get.dart';
 import 'package:intl/intl.dart';
 
 import '../../controllers/institution_controller.dart';
+import '../../controllers/user_controller.dart';
+import '../../utils/export_utils.dart';
 
 class OdemelerRaporuPage extends StatefulWidget {
   const OdemelerRaporuPage({super.key});
@@ -16,11 +18,14 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
   static const String _allFilter = 'Tümü';
 
   final InstitutionController _institution = Get.find<InstitutionController>();
+  final UserController _user = Get.find<UserController>();
 
   String _selectedType = _allFilter;
   String _selectedReceiver = _allFilter;
   late DateTime _startDate;
   late DateTime _endDate;
+
+  List<_PaymentReportEntry> _cachedFiltered = [];
 
   @override
   void initState() {
@@ -38,9 +43,24 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
         body: Center(child: Text('Kurum bilgisi bulunamadı.')),
       );
     }
+    final isAdmin = (_user.data['rol'] ?? '').toString() == 'YÖNETİCİ';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Gelir Raporu'),
+        actions: [
+          if (isAdmin) ...[
+            IconButton(
+              tooltip: 'Excel İndir',
+              icon: const Icon(Icons.table_chart_outlined),
+              onPressed: () => _exportExcel(context),
+            ),
+            IconButton(
+              tooltip: 'PDF İndir',
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              onPressed: () => _exportPdf(context),
+            ),
+          ],
+        ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance.collectionGroup('odemeler').snapshots(),
@@ -90,6 +110,7 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
 
           final totalAmount =
               filtered.fold<double>(0, (sum, item) => sum + item.amount);
+          _cachedFiltered = filtered;
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -423,6 +444,46 @@ class _OdemelerRaporuPageState extends State<OdemelerRaporuPage> {
       return price.toStringAsFixed(0);
     }
     return price.toStringAsFixed(2);
+  }
+
+  void _exportExcel(BuildContext context) {
+    ExportUtils.shareExcel(
+      context: context,
+      fileBaseName: 'gelir_raporu',
+      headers: const ['Tür', 'Tutar (TL)', 'Ödeyen', 'Geliri Alan', 'Açıklama', 'Tarih'],
+      rows: _cachedFiltered
+          .map((e) => [
+                e.typeLabel,
+                _formatPrice(e.amount),
+                e.paidByName,
+                e.receivedByName,
+                e.note,
+                e.createdAt != null
+                    ? DateFormat('dd.MM.yyyy HH:mm').format(e.createdAt!)
+                    : '',
+              ])
+          .toList(),
+    );
+  }
+
+  void _exportPdf(BuildContext context) {
+    ExportUtils.sharePdf(
+      context: context,
+      title: 'Gelir Raporu',
+      headers: const ['Tür', 'Tutar', 'Ödeyen', 'Alan', 'Açıklama', 'Tarih'],
+      rows: _cachedFiltered
+          .map((e) => [
+                e.typeLabel,
+                '${_formatPrice(e.amount)} TL',
+                e.paidByName,
+                e.receivedByName,
+                e.note,
+                e.createdAt != null
+                    ? DateFormat('dd.MM.yyyy HH:mm').format(e.createdAt!)
+                    : '',
+              ])
+          .toList(),
+    );
   }
 }
 

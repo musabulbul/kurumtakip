@@ -11,8 +11,31 @@ class AuthService {
       String email, String password, BuildContext context) async {
     _showLoadingDialog(context);
     try {
-      // Firestore'da kullanıcıyı bul
-      QuerySnapshot userQuery = await _firestore
+      // Önce Firebase Auth ile giriş yap, sonra Firestore'dan kullanıcı verisini çek.
+      UserCredential userCredential;
+      try {
+        userCredential = await _auth.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      } on FirebaseAuthException catch (e) {
+        _dismissLoadingDialog();
+        final messenger = ScaffoldMessenger.maybeOf(context);
+        if (messenger == null) return;
+        String message;
+        if (e.code == 'user-not-found') {
+          message = 'Bu e-posta ile kayıtlı bir hesap bulunamadı.';
+        } else if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+          message = 'E-posta veya şifre hatalı.';
+        } else {
+          message = 'Firebase giriş hatası: ${e.message}';
+        }
+        messenger.showSnackBar(SnackBar(content: Text(message)));
+        return;
+      }
+
+      // Auth başarılı — artık Firestore okunabilir.
+      final QuerySnapshot userQuery = await _firestore
           .collection('kullanicilar')
           .where('email', isEqualTo: email)
           .limit(1)
@@ -22,54 +45,48 @@ class AuthService {
         _dismissLoadingDialog();
         final messenger = ScaffoldMessenger.maybeOf(context);
         messenger?.showSnackBar(
-          const SnackBar(content: Text('Kullanıcı bulunamadı.')),
+          const SnackBar(content: Text('Kullanıcı kaydı bulunamadı.')),
         );
         return;
       }
 
-      var userDoc = userQuery.docs.first;
-      var userData = userDoc.data() as Map<String, dynamic>;
-      String? uid = userData['uid'];
+      final userDoc = userQuery.docs.first;
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final uid = userData['uid'];
+      final durum = (userData['durum'] ?? 'aktif').toString();
 
-      try {
-        UserCredential userCredential = await _auth.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-
-        if (uid == null || uid != userCredential.user!.uid) {
-          await _firestore.collection('kullanicilar').doc(userDoc.id).update({
-            'uid': userCredential.user!.uid,
-          });
-        }
-
-        _dismissLoadingDialog();
-        _navigateToHome(context, userDoc.id, userData['kurumkodu']);
-        return;
-      } on FirebaseAuthException catch (e) {
+      if (durum == 'pasif') {
+        await _auth.signOut();
         _dismissLoadingDialog();
         final messenger = ScaffoldMessenger.maybeOf(context);
-        if (messenger == null) {
-          return;
-        }
-        String message;
-        if (e.code == 'user-not-found') {
-          message = 'Bu e-posta ile kayıtlı bir hesap bulunamadı.';
-        } else if (e.code == 'wrong-password') {
-          message = 'Yanlış şifre.';
-        } else {
-          message = 'Firebase giriş hatası: ${e.message}';
-        }
-        messenger.showSnackBar(
-          SnackBar(content: Text(message)),
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Hesabınız pasif durumda. Yöneticinizle iletişime geçin.')),
         );
+        return;
       }
+
+      if (durum == 'ayrildi') {
+        await _auth.signOut();
+        _dismissLoadingDialog();
+        final messenger = ScaffoldMessenger.maybeOf(context);
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Bu hesap artık aktif değil.')),
+        );
+        return;
+      }
+
+      if (uid == null || uid != userCredential.user!.uid) {
+        await _firestore.collection('kullanicilar').doc(userDoc.id).update({
+          'uid': userCredential.user!.uid,
+        });
+      }
+
+      _dismissLoadingDialog();
+      _navigateToHome(context, userDoc.id, userData['kurumkodu']);
     } catch (e) {
       _dismissLoadingDialog();
       final messenger = ScaffoldMessenger.maybeOf(context);
-      if (messenger == null) {
-        return;
-      }
+      if (messenger == null) return;
       final errorMessage = e.toString().replaceFirst('Exception: ', '');
       messenger.showSnackBar(
         SnackBar(content: Text('Giriş işlemi başarısız: $errorMessage')),

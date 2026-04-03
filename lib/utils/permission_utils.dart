@@ -15,6 +15,12 @@ const String kPermissionViewContactInfo = 'can_view_contact_info';
 const String kPermissionSearchStudents = 'can_search_students';
 const String kPermissionUpdateStudent = 'can_update_student';
 const String kPermissionMakeSale = 'can_make_sale';
+const String kPermissionManagePackages = 'can_manage_packages';
+const String kPermissionAddToContacts = 'can_add_to_contacts';
+const String kPermissionReceiveAllReservationNotifications =
+    'can_receive_all_reservation_notifications';
+const String kPermissionReceiveAssignedReservationNotifications =
+    'can_receive_assigned_reservation_notifications';
 
 bool _isTruthy(dynamic value) {
   if (value is bool) return value;
@@ -54,21 +60,41 @@ String _readString(dynamic source, String key) {
   return value.toString().trim();
 }
 
+String _normalizeRole(dynamic value) {
+  var input = (value ?? '').toString().trim();
+  if (input.isEmpty) return '';
+  input = input
+      .replaceAll('\u0307', '')
+      .replaceAll('İ', 'I')
+      .replaceAll('ı', 'I')
+      .replaceAll('ö', 'O')
+      .replaceAll('Ö', 'O')
+      .replaceAll('ü', 'U')
+      .replaceAll('Ü', 'U')
+      .replaceAll('ş', 'S')
+      .replaceAll('Ş', 'S')
+      .replaceAll('ç', 'C')
+      .replaceAll('Ç', 'C')
+      .replaceAll('ğ', 'G')
+      .replaceAll('Ğ', 'G');
+  return input.toUpperCase();
+}
+
 bool isManagerUser(dynamic userData) {
   final map = _asMap(userData);
-  final role = _readString(map, _kRoleKey).toUpperCase();
+  final role = _normalizeRole(_readString(map, _kRoleKey));
   final isImpersonated = _isTruthy(map[_kImpersonatedKey]);
 
   if (isImpersonated) {
-    return role == 'YÖNETİCİ';
+    return role == 'YONETICI';
   }
 
-  if (role == 'YÖNETİCİ') {
+  if (role == 'YONETICI') {
     return true;
   }
 
-  final upperRole = _readString(map, _kUpperManagementKey).toUpperCase();
-  return upperRole == 'ADMIN' || upperRole == 'YÖNETİCİ';
+  final upperRole = _normalizeRole(_readString(map, _kUpperManagementKey));
+  return upperRole == 'ADMIN' || upperRole == 'YONETICI';
 }
 
 bool hasPermission(dynamic userData, String permissionKey) {
@@ -77,6 +103,16 @@ bool hasPermission(dynamic userData, String permissionKey) {
   }
   if (isManagerUser(userData)) {
     return true;
+  }
+  final permissions = _readPermissions(userData)
+      .map((permission) => permission.toLowerCase())
+      .toSet();
+  return permissions.contains(permissionKey.toLowerCase());
+}
+
+bool hasExplicitPermission(dynamic userData, String permissionKey) {
+  if (permissionKey.trim().isEmpty) {
+    return false;
   }
   final permissions = _readPermissions(userData)
       .map((permission) => permission.toLowerCase())
@@ -113,6 +149,19 @@ bool canUpdateStudent(dynamic userData) =>
 
 bool canMakeSale(dynamic userData) =>
     hasPermission(userData, kPermissionMakeSale);
+
+bool canManagePackages(dynamic userData) =>
+    hasPermission(userData, kPermissionManagePackages);
+
+bool canAddToContacts(dynamic userData) =>
+    hasPermission(userData, kPermissionAddToContacts);
+
+bool canReceiveAllReservationNotifications(dynamic userData) =>
+    hasExplicitPermission(userData, kPermissionReceiveAllReservationNotifications);
+
+bool canReceiveAssignedReservationNotifications(dynamic userData) =>
+    canReceiveAllReservationNotifications(userData) ||
+    hasExplicitPermission(userData, kPermissionReceiveAssignedReservationNotifications);
 
 bool isTcknRestricted(dynamic institutionData) {
   final map = _asMap(institutionData);

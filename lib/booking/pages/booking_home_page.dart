@@ -23,7 +23,7 @@ class BookingHomePage extends StatelessWidget {
                   ),
                   SizedBox(height: 12),
                   Text(
-                    'Randevu almak için kurumunuza ait özel bağlantıyı kullanın.\nÖrnek: /hurma-juwena',
+                    'Randevu almak için kurumunuza ait özel bağlantıyı kullanın.\nÖrnek: /mebs',
                     textAlign: TextAlign.center,
                   ),
                 ],

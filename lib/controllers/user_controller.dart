@@ -1,5 +1,6 @@
 import 'package:get/get.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../services/fcm_service.dart';
 
 class UserController extends GetxController {
   var data = {}.obs;
@@ -25,10 +26,13 @@ class UserController extends GetxController {
           .timeout(const Duration(seconds: 12));
       if (userDoc.exists) {
         final fetched = userDoc.data() as Map<String, dynamic>;
+        fetched['uid'] = trimmedUserDocId;
         data.value = fetched;
         _originalData = Map<String, dynamic>.from(fetched);
         _impersonatedRole = null;
         _impersonatedInstitutionId = null;
+        // FCM token'ı kaydet (mobil platformlarda push bildirim için).
+        FcmService.init(trimmedUserDocId).ignore();
       } else {
         data.value = {};
         _originalData = null;

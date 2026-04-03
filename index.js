@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import pino from 'pino';
 import cors from 'cors';
 import { Firestore } from '@google-cloud/firestore';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 
 const app = express();
 app.use(
@@ -27,6 +29,43 @@ function getFirestore() {
   return firestore;
 }
 
+let messaging;
+function getMessagingService() {
+  if (!messaging) {
+    if (getApps().length === 0) initializeApp();
+    messaging = getMessaging();
+  }
+  return messaging;
+}
+
+async function sendFcmToUser({ userId, title, body }) {
+  if (!userId) return { ok: false, reason: 'user_id_missing' };
+  try {
+    const db = getFirestore();
+    const userDoc = await db.collection('kullanicilar').doc(userId).get();
+    if (!userDoc.exists) {
+      logger.warn({ userId }, '[FCM] user document not found');
+      return { ok: false, reason: 'user_not_found' };
+    }
+    const fcmToken = (userDoc.data() || {}).fcmToken;
+    if (!fcmToken) {
+      logger.warn({ userId }, '[FCM] token not found on user document');
+      return { ok: false, reason: 'token_missing' };
+    }
+    const messageId = await getMessagingService().send({
+      token: fcmToken,
+      notification: { title, body },
+      android: { notification: { sound: 'default', priority: 'high' } },
+      apns: { payload: { aps: { sound: 'default' } } },
+    });
+    logger.info({ userId, messageId }, '[FCM] push sent');
+    return { ok: true, reason: 'sent', messageId };
+  } catch (e) {
+    logger.warn({ err: e, userId }, '[FCM] sendFcmToUser error');
+    return { ok: false, reason: 'send_error', error: String(e?.message || e) };
+  }
+}
+
 const PORT = process.env.PORT || 8080;
 const FIRESTORE_COLLECTION = process.env.FIRESTORE_COLLECTION || 'kurumlar';
 const SMS_PROVIDER_COLLECTION = process.env.SMS_PROVIDER_COLLECTION || 'sms_providers';
@@ -36,6 +75,8 @@ const BOOKING_ORGS_COLLECTION = process.env.BOOKING_ORGS_COLLECTION || 'orgs';
 const BOOKING_SERVICES_SUBCOLLECTION = process.env.BOOKING_SERVICES_SUBCOLLECTION || 'services';
 const BOOKINGS_COLLECTION = process.env.BOOKINGS_COLLECTION || 'bookings';
 const BOOKING_LOCKS_COLLECTION = process.env.BOOKING_LOCKS_COLLECTION || 'bookingLocks';
+const PERMISSION_RECEIVE_ALL_RESERVATION_NOTIFICATIONS =
+  'can_receive_all_reservation_notifications';
 
 function asMap(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -44,12 +85,64 @@ function asMap(value) {
   return {};
 }
 
+/**
+ * Org belgesini önce `orgs` koleksiyonunda, bulamazsa `kurumlar` koleksiyonunda arar.
+ * Flutter'ın OrgPublicService ile aynı mantık.
+ * @returns {{ snap: FirebaseFirestore.DocumentSnapshot, ref: FirebaseFirestore.DocumentReference, bookingEnabled: boolean, settings: object } | null}
+ */
+async function resolveOrgData(db, orgId) {
+  if (!orgId) return null;
+
+  // Önce `orgs` koleksiyonuna bak
+  const orgsSnap = await db.collection(BOOKING_ORGS_COLLECTION).doc(orgId).get();
+  if (orgsSnap.exists) {
+    const raw = orgsSnap.data() || {};
+    return {
+      snap: orgsSnap,
+      ref: orgsSnap.ref,
+      bookingEnabled: raw.bookingEnabled === true,
+      settings: asMap(raw.bookingSettings),
+      workingHours: asMap(raw.workingHours),
+    };
+  }
+
+  // Fallback: `kurumlar` koleksiyonu (legacy)
+  const legacySnap = await db.collection('kurumlar').doc(orgId).get();
+  if (!legacySnap.exists) return null;
+
+  const raw = legacySnap.data() || {};
+  const rootSettings = asMap(raw.settings);
+  const onlineBooking = asMap(rootSettings.onlineBooking);
+  const settings = Object.keys(asMap(raw.bookingSettings)).length > 0
+    ? asMap(raw.bookingSettings)
+    : onlineBooking;
+  const bookingEnabled = raw.bookingEnabled === true || settings.enabled === true;
+  const workingHours = Object.keys(asMap(raw.workingHours)).length > 0
+    ? asMap(raw.workingHours)
+    : asMap(onlineBooking.workingHours);
+
+  return {
+    snap: legacySnap,
+    ref: legacySnap.ref,
+    bookingEnabled,
+    settings,
+    workingHours,
+  };
+}
+
 function normalizePhone(value) {
   if (!value) return '';
   let digits = String(value).replace(/\D/g, '');
   if (digits.startsWith('90') && digits.length === 12) digits = digits.slice(2);
   if (digits.startsWith('0') && digits.length === 11) digits = digits.slice(1);
   return digits;
+}
+
+function buildShortName(fullName) {
+  const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '-';
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}`;
 }
 
 function joinUrl(baseUrl, path) {
@@ -105,6 +198,15 @@ function extractCredit(decoded) {
   if (raw === null || raw === undefined) return null;
   const numeric = Number(String(raw).replace(',', '.'));
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function hasExplicitPermission(userData, permissionKey) {
+  if (!permissionKey) return false;
+  const raw = userData?.yetkiler;
+  if (!Array.isArray(raw)) return false;
+  return raw
+    .map((item) => String(item || '').trim().toLowerCase())
+    .includes(String(permissionKey).trim().toLowerCase());
 }
 
 function buildCredentials(kurumData) {
@@ -561,6 +663,175 @@ app.post('/sms/send', async (req, res) => {
   }
 });
 
+app.post('/sms/otp', async (req, res) => {
+  const requestId = crypto.randomUUID();
+  logger.info({ requestId, route: 'sms/otp' }, '[sms] otp request received');
+  try {
+    const body = req.body || {};
+    const kurumId = String(body.kurum_id || body.kurumId || '').trim();
+    const phone = String(body.phone || '').trim();
+    const orgName = String(body.org_name || body.orgName || '').trim();
+
+    if (!phone) return res.status(400).json({ error: 'phone_required' });
+
+    const kurum = await getKurumData(kurumId);
+    const kurumData = kurum.data || {};
+
+    const providerId = String(
+      body.provider_id || body.providerId || kurumData[SMS_PROVIDER_FIELD] || kurumData.smsProviderId || ''
+    ).trim();
+    if (!providerId) return res.status(422).json({ error: 'sms_provider_missing' });
+
+    const provider = await getSmsProviderData(providerId);
+    const credentials = buildCredentials(kurumData);
+
+    // 6 haneli rastgele OTP kodu oluştur
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const label = orgName ? `${orgName} online` : 'Online randevu';
+    const message = `${label} sistemine giris kodunuz: ${code}`;
+
+    const payload = buildSmsPayload({
+      provider: provider.data,
+      credentials,
+      message,
+      recipients: [phone],
+      personalizedMessages: [],
+    });
+
+    const providerRequest = await requestProvider({
+      providerData: provider.data,
+      credentials,
+      payload,
+      usePersonalized: false,
+    });
+
+    logger.info(
+      { requestId, providerId, status: providerRequest.response.status },
+      '[sms] otp provider response'
+    );
+
+    if (!providerRequest.response.ok) {
+      return res.status(502).json({
+        error: 'sms_provider_failed',
+        status: providerRequest.response.status,
+      });
+    }
+
+    const businessError = extractProviderError(providerRequest.decoded);
+    if (businessError) {
+      return res.status(422).json({ error: 'sms_provider_business_error', message: businessError });
+    }
+
+    return res.status(200).json({ ok: true, code });
+  } catch (err) {
+    logger.error({ err, requestId }, '[sms] otp error');
+    if (err.message === 'kurum_id_missing') return res.status(400).json({ error: 'kurum_id_required' });
+    if (err.message === 'kurum_not_found') return res.status(404).json({ error: 'kurum_not_found' });
+    if (err.message === 'sms_provider_missing') return res.status(422).json({ error: 'sms_provider_missing' });
+    if (err.message === 'sms_provider_not_found') return res.status(404).json({ error: 'sms_provider_not_found' });
+    return res.status(500).json({ error: 'otp_send_failed', detail: err.message });
+  }
+});
+
+app.post('/registration/check', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const email = String(body.email || '').trim().toLowerCase();
+    const phone = String(body.phone || '').trim();
+
+    const db = getFirestore();
+    const results = await Promise.all([
+      email
+        ? db.collection('kullanicilar').where('email', '==', email).limit(1).get()
+        : Promise.resolve(null),
+      phone
+        ? db.collection('kullanicilar').where('telefon', '==', phone).limit(1).get()
+        : Promise.resolve(null),
+    ]);
+
+    return res.status(200).json({
+      ok: true,
+      emailExists: results[0] ? !results[0].empty : false,
+      phoneExists: results[1] ? !results[1].empty : false,
+    });
+  } catch (err) {
+    logger.error({ err }, '[registration] check error');
+    return res.status(500).json({ error: 'check_failed', detail: err.message });
+  }
+});
+
+app.post('/sms/registration-otp', async (req, res) => {
+  const requestId = crypto.randomUUID();
+  logger.info({ requestId, route: 'sms/registration-otp' }, '[sms] registration otp request received');
+  try {
+    const body = req.body || {};
+    const phone = String(body.phone || '').trim();
+    if (!phone) return res.status(400).json({ error: 'phone_required' });
+
+    const systemKurumId = process.env.SYSTEM_KURUM_ID || '';
+    const systemSlug = process.env.SYSTEM_KURUM_SLUG || 'mebs';
+
+    let kurumData;
+    if (systemKurumId) {
+      const doc = await getFirestore().collection(FIRESTORE_COLLECTION).doc(systemKurumId).get();
+      if (!doc.exists) return res.status(404).json({ error: 'system_kurum_not_found' });
+      kurumData = doc.data() || {};
+    } else {
+      const query = await getFirestore()
+        .collection(FIRESTORE_COLLECTION)
+        .where('slug', '==', systemSlug)
+        .limit(1)
+        .get();
+      if (query.empty) return res.status(404).json({ error: 'system_kurum_not_found' });
+      kurumData = query.docs[0].data() || {};
+    }
+    const providerId = String(kurumData[SMS_PROVIDER_FIELD] || '').trim();
+    if (!providerId) return res.status(422).json({ error: 'sms_provider_missing' });
+
+    const provider = await getSmsProviderData(providerId);
+    const credentials = buildCredentials(kurumData);
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const message = `Mebs Kurum Takip uygulamasi kayit islemi icin dogrulama kodunuz: ${code}`;
+
+    const payload = buildSmsPayload({
+      provider: provider.data,
+      credentials,
+      message,
+      recipients: [phone],
+      usePersonalized: false,
+    });
+
+    const providerRequest = await requestProvider({
+      providerData: provider.data,
+      credentials,
+      payload,
+      usePersonalized: false,
+    });
+
+    logger.info(
+      { requestId, providerId, status: providerRequest.response.status },
+      '[sms] registration otp provider response'
+    );
+
+    if (!providerRequest.response.ok) {
+      return res.status(502).json({ error: 'sms_provider_failed' });
+    }
+
+    const businessError = extractProviderError(providerRequest.decoded);
+    if (businessError) {
+      return res.status(422).json({ error: 'sms_provider_business_error', message: businessError });
+    }
+
+    return res.status(200).json({ ok: true, code });
+  } catch (err) {
+    logger.error({ err, requestId }, '[sms] registration otp error');
+    if (err.message === 'sms_provider_missing') return res.status(422).json({ error: 'sms_provider_missing' });
+    if (err.message === 'sms_provider_not_found') return res.status(404).json({ error: 'sms_provider_not_found' });
+    return res.status(500).json({ error: 'registration_otp_failed', detail: err.message });
+  }
+});
+
 app.post('/sms/user-info', async (req, res) => {
   const requestId = crypto.randomUUID();
   logger.info({ requestId, route: 'sms/user-info' }, '[sms] user-info request received');
@@ -905,6 +1176,17 @@ function overlaps(leftStart, leftEnd, rightStart, rightEnd) {
   return leftStart < rightEnd && leftEnd > rightStart;
 }
 
+function asDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value?.toDate) {
+    const converted = value.toDate();
+    return converted instanceof Date && !Number.isNaN(converted.getTime()) ? converted : null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function buildLockIds({ orgId, staffId, startTime, endTime, stepMinutes }) {
   const safeStep = Number.isFinite(stepMinutes) && stepMinutes > 0 ? stepMinutes : 15;
   const lockIds = [];
@@ -922,6 +1204,15 @@ app.post('/booking/availability', async (req, res) => {
   const serviceId = String(body.serviceId || '').trim();
   const date = parseIsoDate(body.date);
   const staffId = String(body.staffId || '').trim() || null;
+  const mekanId = String(body.mekanId || '').trim() || null;
+  const mekanIds = Array.isArray(body.mekanIds)
+    ? body.mekanIds
+        .map((value) => String(value || '').trim())
+        .filter((value) => value)
+    : [];
+  const targetMekanIds = mekanIds.length > 0
+    ? Array.from(new Set(mekanIds))
+    : (mekanId ? [mekanId] : []);
 
   if (!orgId || !serviceId || !date) {
     return res.status(400).json({ ok: false, error: 'invalid_request' });
@@ -929,15 +1220,12 @@ app.post('/booking/availability', async (req, res) => {
 
   try {
     const db = getFirestore();
-    const orgRef = db.collection(BOOKING_ORGS_COLLECTION).doc(orgId);
-    const orgSnap = await orgRef.get();
-    if (!orgSnap.exists) {
+    const orgData = await resolveOrgData(db, orgId);
+    if (!orgData) {
       return res.status(404).json({ ok: false, error: 'org_not_found' });
     }
 
-    const org = orgSnap.data() || {};
-    const bookingEnabled = org.bookingEnabled === true;
-    const settings = asMap(org.bookingSettings);
+    const { ref: orgRef, bookingEnabled, settings } = orgData;
     if (!bookingEnabled || settings.enabled === false) {
       return res.status(200).json({ ok: true, slots: [] });
     }
@@ -956,7 +1244,7 @@ app.post('/booking/availability', async (req, res) => {
     const slotMinutes = Number(settings.slotMinutes || 15);
     const minHoursBefore = Number(settings.minHoursBefore || 2);
     const allowSameDay = settings.allowSameDay !== false;
-    const workingHours = asMap(org.workingHours);
+    const workingHours = orgData.workingHours;
     const closedDates = (workingHours.closedDates || []).map((value) => String(value));
     const dayKey = toDateKey(date);
 
@@ -984,21 +1272,51 @@ app.post('/booking/availability', async (req, res) => {
     const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
     const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
 
-    const bookingsSnap = await db
-      .collection(BOOKINGS_COLLECTION)
-      .where('orgId', '==', orgId)
-      .where('bookingDate', '>=', dayStart)
-      .where('bookingDate', '<', dayEnd)
-      .where('status', 'in', ['pending', 'confirmed'])
+    const rezervasyonlarSnap = await db
+      .collection('kurumlar')
+      .doc(orgId)
+      .collection('rezervasyonlar')
+      .where('date', '>=', dayStart)
+      .where('date', '<', dayEnd)
       .get();
 
-    const existing = bookingsSnap.docs
-      .map((doc) => doc.data() || {})
-      .filter((item) => !staffId || String(item.staffId || '') === staffId)
-      .map((item) => ({
-        startTime: new Date(item.startTime.toDate()),
-        endTime: new Date(item.endTime.toDate())
-      }));
+    const occupiedByMekan = new Map();
+    const staffOccupied = [];
+    const globalOccupied = [];
+
+    for (const doc of rezervasyonlarSnap.docs) {
+      const item = doc.data() || {};
+      const status = String(item.status || '').trim();
+      if (status === 'cancelled' || status === 'iptal') continue;
+
+      const startMin = Number(item.startMinutes || 0);
+      const endMin = Number(item.endMinutes || 0);
+      if (!(endMin > startMin)) continue;
+
+      const interval = {
+        startTime: new Date(dayStart.getTime() + startMin * 60000),
+        endTime: new Date(dayStart.getTime() + endMin * 60000),
+      };
+      if (!(interval.endTime > interval.startTime)) continue;
+
+      const itemLocationId = String(item.locationId || '').trim();
+      if (itemLocationId) {
+        const list = occupiedByMekan.get(itemLocationId) || [];
+        list.push(interval);
+        occupiedByMekan.set(itemLocationId, list);
+      } else {
+        // Konumu olmayan bloklar/rezervasyonlar tüm mekanları etkiler.
+        globalOccupied.push(interval);
+      }
+
+      const assignedUserId = String(item.assignedUserId || '').trim();
+      if (staffId && assignedUserId === staffId) {
+        staffOccupied.push(interval);
+      }
+    }
+
+    const conflicts = (intervals, start, end) =>
+      intervals.some((entry) => overlaps(start, end, entry.startTime, entry.endTime));
 
     const slots = [];
     for (const rawWindow of windows) {
@@ -1014,14 +1332,43 @@ app.post('/booking/availability', async (req, res) => {
       for (let cursor = new Date(windowStart); ; ) {
         const slotEnd = new Date(cursor.getTime() + durationMinutes * 60000);
         if (slotEnd > windowEnd) break;
-        const busy = existing.some((entry) =>
-          overlaps(cursor, slotEnd, entry.startTime, entry.endTime)
-        );
-        if (!busy && cursor >= minAllowed) {
-          slots.push({
-            start: cursor.toISOString(),
-            end: slotEnd.toISOString()
-          });
+        if (cursor < minAllowed) {
+          cursor = new Date(cursor.getTime() + slotMinutes * 60000);
+          continue;
+        }
+
+        if (staffId && conflicts(staffOccupied, cursor, slotEnd)) {
+          cursor = new Date(cursor.getTime() + slotMinutes * 60000);
+          continue;
+        }
+
+        if (targetMekanIds.length > 0) {
+          let selectedMekanId = null;
+          for (const currentMekanId of targetMekanIds) {
+            const mekanOccupied = occupiedByMekan.get(currentMekanId) || [];
+            const busy =
+              conflicts(globalOccupied, cursor, slotEnd) ||
+              conflicts(mekanOccupied, cursor, slotEnd);
+            if (!busy) {
+              selectedMekanId = currentMekanId;
+              break;
+            }
+          }
+          if (selectedMekanId) {
+            slots.push({
+              start: cursor.toISOString(),
+              end: slotEnd.toISOString(),
+              mekanId: selectedMekanId,
+            });
+          }
+        } else {
+          // Mekan kısıtı yoksa global çakışmaları baz al.
+          if (!conflicts(globalOccupied, cursor, slotEnd)) {
+            slots.push({
+              start: cursor.toISOString(),
+              end: slotEnd.toISOString(),
+            });
+          }
         }
         cursor = new Date(cursor.getTime() + slotMinutes * 60000);
       }
@@ -1046,6 +1393,10 @@ app.post('/booking/create', async (req, res) => {
   const notes = String(body.notes || '').trim();
   const staffId = String(body.staffId || '').trim();
   const staffName = String(body.staffName || '').trim();
+  const mekanId = String(body.mekanId || '').trim();
+  const paketId = String(body.paketId || '').trim();
+  const paketAdi = String(body.paketAdi || '').trim();
+  const paketOperationId = String(body.paketOperationId || '').trim();
 
   const bookingDate = parseIsoDate(body.bookingDate);
   const startTime = parseIsoDate(body.startTime);
@@ -1070,15 +1421,12 @@ app.post('/booking/create', async (req, res) => {
 
   try {
     const db = getFirestore();
-    const orgRef = db.collection(BOOKING_ORGS_COLLECTION).doc(orgId);
-    const orgSnap = await orgRef.get();
-    if (!orgSnap.exists) {
+    const orgData = await resolveOrgData(db, orgId);
+    if (!orgData) {
       return res.status(404).json({ ok: false, error: 'org_not_found' });
     }
 
-    const org = orgSnap.data() || {};
-    const bookingEnabled = org.bookingEnabled === true;
-    const settings = asMap(org.bookingSettings);
+    const { bookingEnabled, settings } = orgData;
     if (!bookingEnabled || settings.enabled === false) {
       return res.status(403).json({ ok: false, error: 'booking_closed' });
     }
@@ -1099,33 +1447,60 @@ app.post('/booking/create', async (req, res) => {
     const stepMinutes = Number(settings.slotMinutes || 15);
     const lockIds = buildLockIds({ orgId, staffId, startTime, endTime, stepMinutes });
 
-    const bookingRef = db.collection(BOOKINGS_COLLECTION).doc();
-    await db.runTransaction(async (tx) => {
-      const dayStart = new Date(
-        bookingDate.getFullYear(),
-        bookingDate.getMonth(),
-        bookingDate.getDate(),
-        0,
-        0,
-        0,
-        0
-      );
-      const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+    // Mekan adını Firestore'dan çek (locationName için)
+    let locationName = '';
+    if (mekanId) {
+      try {
+        const mekanDoc = await db
+          .collection('kurumlar').doc(orgId)
+          .collection('mekanlar').doc(mekanId)
+          .get();
+        if (mekanDoc.exists) {
+          locationName = String((mekanDoc.data() || {}).adi || '').trim();
+        }
+      } catch (_) {}
+    }
 
+    // startMinutes / endMinutes: gün başından itibaren dakika (timezone-agnostic)
+    const dayStart = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate(),
+      0, 0, 0, 0
+    );
+    const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+    const startMinutes = Math.round((startTime.getTime() - bookingDate.getTime()) / 60000);
+    const endMinutes = Math.round((endTime.getTime() - bookingDate.getTime()) / 60000);
+
+    const rezervasyonRef = db
+      .collection('kurumlar')
+      .doc(orgId)
+      .collection('rezervasyonlar')
+      .doc();
+
+    await db.runTransaction(async (tx) => {
+      // Aynı gün içindeki rezervasyonları oku ve çakışma kontrolü yap.
       const overlapQuery = db
-        .collection(BOOKINGS_COLLECTION)
-        .where('orgId', '==', orgId)
-        .where('bookingDate', '>=', dayStart)
-        .where('bookingDate', '<', dayEnd)
-        .where('status', 'in', ['pending', 'confirmed']);
+        .collection('kurumlar')
+        .doc(orgId)
+        .collection('rezervasyonlar')
+        .where('date', '>=', dayStart)
+        .where('date', '<', dayEnd);
 
       const overlapSnap = await tx.get(overlapQuery);
       const overlapping = overlapSnap.docs.some((doc) => {
         const item = doc.data() || {};
-        if (staffId && String(item.staffId || '') !== staffId) return false;
-        const left = new Date(item.startTime.toDate());
-        const right = new Date(item.endTime.toDate());
-        return overlaps(startTime, endTime, left, right);
+        const status = String(item.status || '');
+        if (status === 'cancelled' || status === 'iptal') return false;
+        // Mekan kontrolü: farklı mekanlara ait rezervasyonlar çakışma oluşturmaz
+        const itemLocationId = String(item.locationId || '').trim();
+        const requestedMekanId = String(mekanId || '').trim();
+        if (itemLocationId && requestedMekanId && itemLocationId !== requestedMekanId) return false;
+        if (staffId && String(item.assignedUserId || '') !== staffId) return false;
+        const left = Number(item.startMinutes || 0);
+        const right = Number(item.endMinutes || 0);
+        if (right <= left) return false;
+        return startMinutes < right && endMinutes > left;
       });
       if (overlapping) {
         const err = new Error('slot_unavailable');
@@ -1133,53 +1508,237 @@ app.post('/booking/create', async (req, res) => {
         throw err;
       }
 
+      const now = new Date();
       for (const lockId of lockIds) {
         const lockRef = db.collection(BOOKING_LOCKS_COLLECTION).doc(lockId);
         const lockSnap = await tx.get(lockRef);
         if (lockSnap.exists) {
-          const err = new Error('slot_locked');
-          err.code = 'slot_locked';
-          throw err;
+          // Süresi dolmuş kilitleri yoksay
+          const lockData = lockSnap.data() || {};
+          const expiresAt = lockData.expiresAt?.toDate?.() ?? new Date(0);
+          if (expiresAt > now) {
+            const err = new Error('slot_locked');
+            err.code = 'slot_locked';
+            throw err;
+          }
         }
         tx.set(lockRef, {
           orgId,
           staffId: staffId || null,
           lockStart: startTime,
           lockEnd: endTime,
-          bookingId: bookingRef.id,
+          bookingId: rezervasyonRef.id,
           createdAt: new Date(),
           expiresAt: new Date(startTime.getTime() + 2 * 3600000)
         });
       }
 
-      tx.set(bookingRef, {
-        orgId,
+      const docData = {
+        date: startTime,
+        startMinutes,
+        endMinutes,
         customerId,
         customerName,
+        customerShortName: buildShortName(customerName),
         customerPhone,
-        serviceId,
-        serviceName,
-        bookingDate,
-        startTime,
-        endTime,
-        status: 'pending',
+        operationName: serviceName,
+        operationId: serviceId,
+        status: 'online',
         source,
-        notes: notes || null,
-        staffId: staffId || null,
-        staffName: staffName || null,
-        createdAt: new Date()
-      });
+        olusturan: 'Online',
+        createdByName: 'Online',
+        createdAt: new Date(),
+      };
+      if (notes) docData.aciklama = notes;
+      if (staffId) docData.assignedUserId = staffId;
+      if (staffName) docData.assignedUserName = staffName;
+      if (mekanId) docData.locationId = mekanId;
+      if (locationName) docData.locationName = locationName;
+      if (paketId) docData.paketId = paketId;
+      if (paketAdi) docData.paketAdi = paketAdi;
+      if (paketOperationId) docData.paketOperationId = paketOperationId;
+
+      tx.set(rezervasyonRef, docData);
     });
 
-    return res.status(200).json({ ok: true, bookingId: bookingRef.id });
+    // Kilitleri temizle — rezervasyon oluşturuldu, artık gerek yok (fire-and-forget).
+    lockIds.forEach((lockId) => {
+      db.collection(BOOKING_LOCKS_COLLECTION).doc(lockId).delete().catch(() => {});
+    });
+
+    // Yöneticilere bildirim gönder (fire-and-forget, hata rezervasyonu etkilemez).
+    logger.info(
+      {
+        orgId,
+        bookingId: rezervasyonRef.id,
+        customerId,
+        staffId: staffId || null,
+      },
+      '[booking] triggering notifications'
+    );
+    sendBookingNotificationToManagers({
+      db,
+      orgId,
+      bookingId: rezervasyonRef.id,
+      customerId,
+      customerName,
+      startTime,
+      assignedUserId: staffId || '',
+      assignedUserName: staffName || '',
+    }).catch((e) => logger.warn({ err: e }, '[booking] notification error'));
+
+    return res.status(200).json({ ok: true, bookingId: rezervasyonRef.id });
   } catch (err) {
     logger.error({ err }, '[booking] create error');
     if (err.code === 'slot_unavailable' || err.code === 'slot_locked') {
       return res.status(409).json({ ok: false, error: 'slot_not_available' });
     }
-    return res.status(500).json({ ok: false, error: 'booking_create_failed' });
+    return res.status(500).json({
+      ok: false,
+      error: 'booking_create_failed',
+      detail: String(err?.message || 'unknown_error')
+    });
   }
 });
+
+// Flutter fallback path'inden çağrılır: rezervasyon doğrudan Firestore'a yazılmış,
+// sadece bildirim göndermesi isteniyor.
+app.post('/notify-managers', async (req, res) => {
+  const body = req.body || {};
+  const orgId = String(body.orgId || '').trim();
+  const customerName = String(body.customerName || '').trim();
+  const customerId = String(body.customerId || '').trim();
+  const bookingId = String(body.bookingId || '').trim();
+  const assignedUserId = String(body.assignedUserId || '').trim();
+  const assignedUserName = String(body.assignedUserName || '').trim();
+  const startTimeRaw = body.startTime;
+
+  if (!orgId || !customerName) {
+    return res.status(400).json({ ok: false, error: 'invalid_request' });
+  }
+
+  const startTime = startTimeRaw ? new Date(startTimeRaw) : new Date();
+
+  try {
+    const db = getFirestore();
+    await sendBookingNotificationToManagers({
+      db,
+      orgId,
+      bookingId,
+      customerId,
+      customerName,
+      startTime,
+      assignedUserId,
+      assignedUserName,
+    });
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    logger.error({ err }, '[notify-managers] error');
+    return res.status(500).json({ ok: false, error: 'notification_failed' });
+  }
+});
+
+// Flutter admin uygulaması tarafından çağrılır: Firestore bildirimi yazıldıktan sonra
+// FCM push bildirimi gönder.
+app.post('/send-fcm', async (req, res) => {
+  const body = req.body || {};
+  const userId = String(body.userId || '').trim();
+  const title = String(body.title || '').trim();
+  const fcmBody = String(body.body || '').trim();
+  if (!userId) return res.status(400).json({ ok: false, error: 'userId_required' });
+  const result = await sendFcmToUser({ userId, title, body: fcmBody });
+  if (result?.ok) {
+    return res.status(200).json({ ok: true, result });
+  }
+  // Tanı için 200 dönmeye devam ediyoruz; client logları reason bilgisini alır.
+  return res.status(200).json({ ok: false, result });
+});
+
+async function sendBookingNotificationToManagers({
+  db,
+  orgId,
+  bookingId,
+  customerId,
+  customerName,
+  startTime,
+  assignedUserId = '',
+  assignedUserName = '',
+}) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const dateStr = `${pad(startTime.getDate())}.${pad(startTime.getMonth() + 1)}.${startTime.getFullYear()} ${pad(startTime.getHours())}:${pad(startTime.getMinutes())}`;
+
+  const usersSnap = await db
+    .collection('kullanicilar')
+    .where('kurumkodu', '==', orgId)
+    .get();
+
+  const veri = {
+    rezervasyonId: bookingId,
+    kurumkodu: orgId,
+    ...(customerId ? { danisanId: customerId } : {}),
+  };
+  const baslik = 'Yeni Online Rezervasyon';
+  const mesaj = `${customerName} — ${dateStr}`;
+  const assignedLabel = String(assignedUserName || assignedUserId || '').trim();
+  const writes = [];
+  const notifiedUserIds = new Set();
+
+  for (const doc of usersSnap.docs) {
+    const data = doc.data() || {};
+    const rol = String(data.rol || '').trim().toUpperCase();
+    if (rol !== 'YÖNETİCİ') continue;
+    if (!hasExplicitPermission(data, PERMISSION_RECEIVE_ALL_RESERVATION_NOTIFICATIONS)) {
+      continue;
+    }
+
+    // Bildirim çanı user.data['uid'] = doc.id olarak override edildiğinden doc.id kullan.
+    writes.push(
+      db.collection('kullanicilar').doc(doc.id).collection('bildirimler').add({
+        baslik,
+        mesaj,
+        tip: 'rezervasyon',
+        okundu: false,
+        tarih: new Date(),
+        veri,
+      })
+    );
+
+    // FCM push bildirimi gönder (token yoksa sessizce atlanır).
+    writes.push(sendFcmToUser({ userId: doc.id, title: baslik, body: mesaj }));
+    notifiedUserIds.add(doc.id);
+  }
+
+  const trimmedAssignedUserId = String(assignedUserId || '').trim();
+  if (trimmedAssignedUserId && !notifiedUserIds.has(trimmedAssignedUserId)) {
+    const assignmentTitle = 'Yeni İşlem Ataması';
+    const assignmentBody = `${customerName} için ${dateStr} tarihli online randevu ${
+      assignedLabel || trimmedAssignedUserId
+    } kişisine atandı.`;
+    writes.push(
+      db.collection('kullanicilar').doc(trimmedAssignedUserId).collection('bildirimler').add({
+        baslik: assignmentTitle,
+        mesaj: assignmentBody,
+        tip: 'atama',
+        okundu: false,
+        tarih: new Date(),
+        veri,
+      })
+    );
+    writes.push(
+      sendFcmToUser({
+        userId: trimmedAssignedUserId,
+        title: assignmentTitle,
+        body: assignmentBody,
+      })
+    );
+    logger.info(
+      { orgId, bookingId, assignedUserId: trimmedAssignedUserId },
+      '[booking] assignment notification queued'
+    );
+  }
+
+  await Promise.all(writes);
+}
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT }, 'SMS gateway service running');

@@ -14,6 +14,8 @@ import '../pages/ara.dart';
 import '../pages/detayli_ara.dart';
 import '../pages/home_page.dart';
 import '../pages/kullanici_ekle.dart';
+import '../pages/kullanici_profil.dart';
+import '../pages/kullanicilar.dart';
 import '../pages/kurumlar.dart';
 
 void runAdminApp() {
@@ -66,9 +68,33 @@ class AdminApp extends StatelessWidget {
         '/ara': (context) => Ara(),
         '/detayliara': (context) => DetayliAra(),
         '/kullaniciekle': (context) => KullaniciEkle(),
+        '/kullanicilar': (context) => const Kullanicilar(),
+        '/kullaniciprofil': (context) => _buildUserProfileRoute(context),
+        '/UserProfilePage': (context) => _buildUserProfileRoute(context),
         '/kurumlar': (context) => const KurumlarPage(),
       },
     );
+  }
+
+  Widget _buildUserProfileRoute(BuildContext context) {
+    final args = ModalRoute.of(context)?.settings.arguments;
+    String userDocId = '';
+    if (args is String) {
+      userDocId = args.trim();
+    } else if (args is Map) {
+      final raw = args['userDocId'];
+      if (raw != null) {
+        userDocId = raw.toString().trim();
+      }
+    }
+    userDocId = userDocId.isNotEmpty
+        ? userDocId
+        : (Uri.base.queryParameters['userDocId'] ?? '').trim();
+
+    if (userDocId.isEmpty) {
+      return const Kullanicilar();
+    }
+    return UserProfilePage(userDocId: userDocId);
   }
 
   ThemeData _buildAppTheme() {

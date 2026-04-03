@@ -5,7 +5,10 @@ import '../controllers/user_controller.dart';
 import 'package:kurum_takip/widgets/home_icon_button.dart';
 
 class KurumlarPage extends StatefulWidget {
-  const KurumlarPage({super.key});
+  const KurumlarPage({super.key, this.initialKurumkodu});
+
+  /// Sayfa açıldığında bu kurumkodu ile arama alanı ön-doldurulur.
+  final String? initialKurumkodu;
 
   @override
   State<KurumlarPage> createState() => _KurumlarPageState();
@@ -28,6 +31,9 @@ class _KurumlarPageState extends State<KurumlarPage> {
     _searchController.addListener(() {
       _filterInstitutions(_searchController.text);
     });
+    if (widget.initialKurumkodu?.isNotEmpty == true) {
+      _searchController.text = widget.initialKurumkodu!;
+    }
     _loadInstitutions();
     _loadSmsProviders();
   }
@@ -79,7 +85,15 @@ class _KurumlarPageState extends State<KurumlarPage> {
         _institutions
           ..clear()
           ..addAll(items);
-        _filteredInstitutions = List.from(_institutions);
+        final q = widget.initialKurumkodu?.trim() ?? '';
+        _filteredInstitutions = q.isNotEmpty
+            ? items.where((i) {
+                final v = [i['kurumkodu'] ?? '', i['kurumadi'] ?? '', i['kisaad'] ?? '']
+                    .join(' ')
+                    .toUpperCase();
+                return v.contains(q.toUpperCase());
+              }).toList()
+            : List.from(_institutions);
         _isLoading = false;
       });
     } catch (e) {
@@ -274,7 +288,7 @@ class _KurumlarPageState extends State<KurumlarPage> {
                   _buildTextField(
                     label: 'Slug',
                     controller: slugController,
-                    hintText: 'orn: hurma-juwena',
+                    hintText: 'orn: mebs',
                     validator: (value) {
                       final normalized = _slugify(value ?? '');
                       if (normalized.isEmpty) {

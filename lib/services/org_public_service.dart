@@ -9,6 +9,16 @@ class OrgPublicService {
 
   final FirebaseFirestore _firestore;
 
+  static const Map<String, int> _legacyDayToIndex = <String, int>{
+    'mon': 1,
+    'tue': 2,
+    'wed': 3,
+    'thu': 4,
+    'fri': 5,
+    'sat': 6,
+    'sun': 7,
+  };
+
   Future<OrgPublicProfile?> _getOrgFromAnyCollection(String orgId) async {
     final orgDoc = await _firestore.collection('orgs').doc(orgId).get();
     if (orgDoc.exists && orgDoc.data() != null) {
@@ -52,18 +62,72 @@ class OrgPublicService {
         : (settings['workingHours'] is Map
             ? Map<String, dynamic>.from(settings['workingHours'] as Map)
             : <String, dynamic>{});
+    final legacySessionHours = rootSettings['sessionHours'] is Map
+        ? Map<String, dynamic>.from(rootSettings['sessionHours'] as Map)
+        : <String, dynamic>{};
+    if (workingHours.isEmpty && legacySessionHours.isNotEmpty) {
+      workingHours.addAll(_legacySessionHoursToWorkingHours(legacySessionHours));
+    }
 
     return {
       'name': raw['name'] ?? raw['kurumadi'] ?? '',
       'slug': raw['slug'] ?? '',
+      'il': raw['il'],
       'district': raw['district'] ?? raw['ilce'],
       'phone': raw['phone'] ?? raw['ilgiliKisiTelefon'],
       'address': raw['address'] ?? raw['adres'],
       'logoUrl': raw['logoUrl'] ?? raw['logo'],
-      'bookingEnabled': raw['bookingEnabled'] == true,
+      'mapsLink': raw['mapsLink'],
+      'latitude': raw['latitude'],
+      'longitude': raw['longitude'],
+      'bookingEnabled': raw['bookingEnabled'] == true || settings['enabled'] == true,
       'bookingSettings': settings,
       'workingHours': workingHours,
     };
+  }
+
+  Map<String, dynamic> _legacySessionHoursToWorkingHours(
+    Map<String, dynamic> sessionHours,
+  ) {
+    final result = <String, dynamic>{};
+    for (final entry in sessionHours.entries) {
+      final dayIndex = _legacyDayToIndex[entry.key.toLowerCase().trim()];
+      if (dayIndex == null) continue;
+      final item = entry.value is Map
+          ? Map<String, dynamic>.from(entry.value as Map)
+          : <String, dynamic>{};
+      final startMinutes = _toInt(item['startMinutes']);
+      final endMinutes = _toInt(item['endMinutes']);
+      if (startMinutes == null || endMinutes == null) continue;
+
+      result['$dayIndex'] = {
+        'isOpen': true,
+        'windows': [
+          {
+            'start': _minutesToTime(startMinutes),
+            'end': _minutesToTime(endMinutes),
+          }
+        ],
+      };
+    }
+    if (result.isNotEmpty) {
+      result['closedDates'] = <String>[];
+    }
+    return result;
+  }
+
+  int? _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim());
+    return null;
+  }
+
+  String _minutesToTime(int minutes) {
+    final safe = minutes.clamp(0, (24 * 60) - 1);
+    final hh = (safe ~/ 60).toString().padLeft(2, '0');
+    final mm = (safe % 60).toString().padLeft(2, '0');
+    return '$hh:$mm';
   }
 
   Future<OrgPublicProfile?> findBySlug(String slug) async {
@@ -112,6 +176,11 @@ class OrgPublicService {
   }
 
   Future<List<OrgService>> listActiveServices(String orgId) async {
+    // Primary: try islemKategorileri (manual booking system with mekan support)
+    final fromIslemler = await _listFromIslemKategorileri(orgId);
+    if (fromIslemler.isNotEmpty) return fromIslemler;
+
+    // Secondary: dedicated orgs/services subcollection
     final query = await _firestore
         .collection('orgs')
         .doc(orgId)
@@ -127,6 +196,7 @@ class OrgPublicService {
       return items;
     }
 
+    // Fallback: legacy kurumlar/services
     final legacyQuery = await _firestore
         .collection('kurumlar')
         .doc(orgId)
@@ -139,5 +209,40 @@ class OrgPublicService {
         .toList(growable: false);
     legacyItems.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     return legacyItems;
+  }
+
+  /// Reads active services from `kurumlar/{orgId}/islemKategorileri` hierarchy.
+  /// Returns only operations where `onlineAktif == true`.
+  Future<List<OrgService>> _listFromIslemKategorileri(String orgId) async {
+    final categories = await _firestore
+        .collection('kurumlar')
+        .doc(orgId)
+        .collection('islemKategorileri')
+        .get();
+
+    if (categories.docs.isEmpty) return const [];
+
+    final results = <OrgService>[];
+    for (final catDoc in categories.docs) {
+      final catName = (catDoc.data()['adi'] as String?)?.trim() ?? catDoc.id;
+      final ops = await catDoc.reference
+          .collection('islemler')
+          .where('onlineAktif', isEqualTo: true)
+          .get();
+      for (final opDoc in ops.docs) {
+        final data = {
+          ...opDoc.data(),
+          'kategoriId': catDoc.id,
+          'kategoriAdi': catName,
+        };
+        final service = OrgService.fromIslem(opDoc.id, orgId, data);
+        if (service.name.isNotEmpty) {
+          results.add(service);
+        }
+      }
+    }
+
+    results.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return results;
   }
 }
